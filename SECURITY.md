@@ -19,10 +19,11 @@ support for older snapshots.
 Do not open a public issue, pull request, or discussion for a security problem.
 
 Report privately to the maintainers through the project's private security
-contact. If a private advisory channel is enabled, use GitHub Security Advisories
-("Report a vulnerability") on this repository. Otherwise email the maintainer
-address listed on the repository profile. Do not send secrets over a channel you
-do not trust, and do not include real customer data in your report.
+contact. Use GitHub Security Advisories on this repository
+([opeblow/shield](https://github.com/opeblow/shield/security/advisories/new)),
+or email the maintainer address listed on the repository profile. Do not send
+secrets over a channel you do not trust, and do not include real customer data in
+your report.
 
 Please include, where you can:
 
