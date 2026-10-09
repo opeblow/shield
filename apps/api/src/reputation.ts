@@ -39,6 +39,7 @@ export function identifierKey(kind: IdentifierKind, value: string, pepper?: Buff
 
 export interface ReputationStore {
   submit(input: { kind: IdentifierKind; value: string; scamType: string; source: string }): Promise<{ id: string; label: string; status: ReportStatus }>;
+  get(id: string): Promise<{ id: string; kind: IdentifierKind; valueKey: string } | null>;
   decide(id: string, action: "verify" | "reject"): Promise<boolean>;
   pending(): Promise<IdentifierReport[]>;
   summaryFor(kind: IdentifierKind, value: string): Promise<ReputationSummary | null>;
@@ -65,6 +66,12 @@ export class MemoryReputationStore implements ReputationStore {
     report.status = action === "verify" ? "verified" : "rejected";
     report.decidedAt = new Date().toISOString();
     return true;
+  }
+
+  async get(id: string): Promise<{ id: string; kind: IdentifierKind; valueKey: string } | null> {
+    const report = this.reports.get(id);
+    if (!report) return null;
+    return { id, kind: report.kind, valueKey: identifierKey(report.kind, report.value, this.pepper) };
   }
 
   async pending(): Promise<IdentifierReport[]> {
@@ -117,6 +124,12 @@ export class PgReputationStore implements ReputationStore {
   async decide(id: string, action: "verify" | "reject"): Promise<boolean> {
     const result = await this.pool.query("UPDATE identifier_reports SET status = $1, decided_at = now() WHERE id = $2 AND status = 'pending'", [action === "verify" ? "verified" : "rejected", id]);
     return (result.rowCount ?? 0) > 0;
+  }
+
+  async get(id: string): Promise<{ id: string; kind: IdentifierKind; valueKey: string } | null> {
+    const result = await this.pool.query<{ kind: string; value_key: string }>("SELECT kind, value_key FROM identifier_reports WHERE id = $1", [id]);
+    const row = result.rows[0];
+    return row ? { id, kind: row.kind as IdentifierKind, valueKey: row.value_key } : null;
   }
 
   async pending(): Promise<IdentifierReport[]> {
