@@ -24,6 +24,7 @@ import { MemoryReputationStore, PgReputationStore, type ReputationStore } from "
 import { MemoryIntegrationKeyStore, PgIntegrationKeyStore, type IntegrationKeyStore, type IntegrationScope } from "./integration.js";
 import { issueCertificate, verifyCertificate, certificateCardHtml, CERTIFICATE_TTL_SECONDS } from "./certificates.js";
 import { buildShieldContext, lookupIntelligence } from "./context.js";
+import { validateArtifact } from "./ingestion.js";
 import { previewUrl } from "./preview.js";
 import { MemoryWaveStore, PgWaveStore, WaveWatch, type WaveStore } from "./waves.js";
 
@@ -105,6 +106,18 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid_json");
   return value as Record<string, unknown>;
+}
+
+async function readRaw(req: IncomingMessage, maxBytes: number): Promise<Uint8Array> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += part.length;
+    if (size > maxBytes) throw new Error("request_too_large");
+    chunks.push(part);
+  }
+  return Buffer.concat(chunks);
 }
 
 const server = createServer(async (req, res) => {
@@ -819,6 +832,25 @@ const server = createServer(async (req, res) => {
     if (env.nodeEnv === "production" && !speechConfigured) recommendations.push("Configure OPENAI_API_KEY, OPENAI_TRANSCRIBE_MODEL, and OPENAI_TTS_MODEL to enable provider-based voice, or keep simulated TTS in development only.");
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     res.end(JSON.stringify({ status: failed.length === 0 ? "ready" : "degraded", checked_at: new Date().toISOString(), checks, recommendations }));
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/media/scan") {
+    try {
+      const address = req.socket.remoteAddress ?? "unknown";
+      let rate;
+      try { rate = await rateLimiter.consume(`${address}:media`, 10, 60_000); }
+      catch { problem(res, 503, "Rate limiting unavailable", "Media scanning is temporarily unavailable."); return; }
+      if (!rate.allowed) { problem(res, 429, "Rate limit exceeded", `Please retry in ${Math.ceil(rate.retryAfterMs / 1000)} seconds.`); return; }
+      const bytes = await readRaw(req, 8 * 1024 * 1024);
+      const declared = (req.headers["content-type"] ?? "").split(";")[0]!.trim();
+      const artifact = validateArtifact({ bytes, ...(declared ? { declaredType: declared } : {}) });
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ accepted: true, kind: artifact.kind, bytes: artifact.bytes, analysis: { scanned: false, note: "Artifact validated as a safe, non-executable upload. Send the accompanying text to /v1/scans for a verdict." } }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "request_failed";
+      if (message === "request_too_large") { problem(res, 413, "Payload too large", "Uploads are limited to 8 MiB."); return; }
+      problem(res, 415, "Unsupported media", message);
+    }
     return;
   }
   problem(res, 404, "Not found", "The requested route does not exist.");
