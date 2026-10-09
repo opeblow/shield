@@ -1,5 +1,19 @@
 import { decodeQrFile } from './qr.js';
 
+const me = await fetch('/v1/auth/me', { cache: 'no-store' })
+  .then((response) => response.ok ? response.json() : null)
+  .catch(() => null);
+if (!me?.user) {
+  location.replace('/auth');
+} else {
+  const emailLabel = document.querySelector('#user-email');
+  if (emailLabel) emailLabel.textContent = me.user.email;
+  document.querySelector('#signout')?.addEventListener('click', async () => {
+    try { await fetch('/v1/auth/logout', { method: 'POST' }); } catch { /* sign out locally regardless */ }
+    location.assign('/');
+  });
+}
+
 const message = document.querySelector('#message');
 const count = document.querySelector('#char-count');
 const language = document.querySelector('#language');
