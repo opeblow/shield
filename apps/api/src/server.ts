@@ -16,14 +16,23 @@ import { SimulatedSpeechProvider, OpenAiSpeechProvider, type SpeechProvider } fr
 import { ScanRepository } from "./repository.js";
 import { ScanJobRegistry } from "./jobs.js";
 import { redactSensitive } from "../../../packages/shared/src/redaction.js";
-import { assessRequestSchema, authLoginSchema, authRegisterSchema, communityReportSchema, lookupRequestSchema, moderateReportSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "./validation.js";
+import { assessRequestSchema, authLoginSchema, authRegisterSchema, certificateRequestSchema, communityReportSchema, decideReportSchema, integrationKeySchema, lookupRequestSchema, moderateReportSchema, reputationReportSchema, scanRequestSchema, verifyChannelSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "./validation.js";
 import { MemoryAuthStore, PgAuthStore, hashPassword, normalizeEmail, verifyPassword, type AuthStore } from "./auth.js";
 import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./rate-limit.js";
+import { findOfficialChannel } from "./directory.js";
+import { MemoryReputationStore, PgReputationStore, type ReputationStore } from "./reputation.js";
+import { MemoryIntegrationKeyStore, PgIntegrationKeyStore, type IntegrationKeyStore, type IntegrationScope } from "./integration.js";
+import { issueCertificate, verifyCertificate, certificateCardHtml, CERTIFICATE_TTL_SECONDS } from "./certificates.js";
+import { buildShieldContext, lookupIntelligence } from "./context.js";
 
 const env = loadEnv();
 const provider = new OpenAiProvider(env.openAiKey, env.openAiModel);
 const repository = env.databaseUrl ? new ScanRepository(env.databaseUrl) : undefined;
 const authStore: AuthStore = env.databaseUrl ? new PgAuthStore(env.databaseUrl) : new MemoryAuthStore();
+const reputationStore: ReputationStore = env.databaseUrl
+  ? new PgReputationStore(env.databaseUrl, env.blindPepper ? Buffer.from(env.blindPepper) : undefined)
+  : new MemoryReputationStore(env.blindPepper ? Buffer.from(env.blindPepper) : undefined);
+const integrationKeyStore: IntegrationKeyStore = env.databaseUrl ? new PgIntegrationKeyStore(env.databaseUrl) : new MemoryIntegrationKeyStore();
 const authSecret = Buffer.from(env.authSecret ?? "development-only-auth-secret-change-me");
 const SESSION_COOKIE = "shield_session";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -44,6 +53,13 @@ const staticFiles: Record<string, { file: string; type: string }> = {
   "/snippet.js": { file: "snippet.js", type: "text/javascript; charset=utf-8" },
   "/recovery.js": { file: "recovery.js", type: "text/javascript; charset=utf-8" },
   "/data/recovery.json": { file: "data/recovery.json", type: "application/json; charset=utf-8" },
+  "/docs": { file: "docs.html", type: "text/html; charset=utf-8" },
+  "/docs.html": { file: "docs.html", type: "text/html; charset=utf-8" },
+  "/docs.js": { file: "docs.js", type: "text/javascript; charset=utf-8" },
+  "/openapi.yaml": { file: "../../../docs/openapi.yaml", type: "application/yaml; charset=utf-8" },
+  "/integrations": { file: "integrations.html", type: "text/html; charset=utf-8" },
+  "/integrations.html": { file: "integrations.html", type: "text/html; charset=utf-8" },
+  "/integrations.js": { file: "integrations.js", type: "text/javascript; charset=utf-8" },
   "/sw.js": { file: "sw.js", type: "text/javascript; charset=utf-8" },
   "/manifest.webmanifest": { file: "manifest.webmanifest", type: "application/manifest+json; charset=utf-8" },
   "/icon.svg": { file: "icon.svg", type: "image/svg+xml" }
@@ -87,11 +103,12 @@ const server = createServer(async (req, res) => {
   res.setHeader("x-frame-options", "DENY");
   res.setHeader("content-security-policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
   res.setHeader("strict-transport-security", "max-age=63072000; includeSubDomains; preload");
-  if (req.method === "GET" && (path === "/app" || path === "/app.html")) {
+  if (req.method === "GET" && (path === "/app" || path === "/app.html" || path === "/integrations" || path === "/integrations.html")) {
     const session = await currentSession(req);
     if (!session) { res.writeHead(302, { location: "/auth", "cache-control": "no-store" }); res.end(); return; }
+    const guardedFile = path.startsWith("/integrations") ? "integrations.html" : "app.html";
     try {
-      const contents = await readFile(resolve(webRoot, "app.html"));
+      const contents = await readFile(resolve(webRoot, guardedFile));
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(contents);
     } catch {
@@ -115,7 +132,7 @@ const server = createServer(async (req, res) => {
     const databaseReady = repository ? await repository.ready() : false;
     const ready = env.nodeEnv !== "production" || databaseReady;
     res.writeHead(ready ? 200 : 503, { "content-type": "application/json" });
-    const communityReports = databaseReady && Boolean(env.blindPepper && env.apiKeyPepper && env.fieldKek && env.communityModerationToken);
+    const communityReports = await reputationStore.ready();
     res.end(JSON.stringify({ ready, persistence: databaseReady ? "postgres" : "unavailable", rate_limit: rateLimiter instanceof RedisRateLimiter ? "redis" : "process_local", scan_mode: env.openAiKey && env.openAiModel ? "rules+openai" : "rules-only", community_reports: communityReports }));
     return;
   }
@@ -167,6 +184,234 @@ const server = createServer(async (req, res) => {
     if (!session) { problem(res, 401, "Unauthorized", "Sign in to continue."); return; }
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     res.end(JSON.stringify({ user: { email: session.email } }));
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/reputation/reports") {
+    try {
+      if (!await requireSession(req, res)) return;
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      let rate;
+      try { rate = await rateLimiter.consume(`${req.socket.remoteAddress ?? "unknown"}:reputation-report`, 3, 3_600_000); }
+      catch { problem(res, 503, "Rate limiting unavailable", "Report submission is temporarily unavailable."); return; }
+      if (!rate.allowed) { problem(res, 429, "Rate limit exceeded", `Please retry in ${Math.ceil(rate.retryAfterMs / 1000)} seconds.`); return; }
+      const validated = reputationReportSchema.safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid report", "Provide an identifier type, value, and scam category."); return; }
+      const data = validated.data;
+      const created = await reputationStore.submit({ kind: data.type, value: data.value, scamType: data.scamType, source: req.socket.remoteAddress ?? "unknown" });
+      res.writeHead(202, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ report_id: created.id, status: created.status, identifier: created.label }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "report_failed";
+      if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
+      if (message === "invalid_json") { problem(res, 400, "Invalid report", "The request body must be a JSON object."); return; }
+      problem(res, 503, "Report unavailable", "The report could not be stored safely. Please retry shortly.");
+    }
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/reputation/lookup") {
+    try {
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      let rate;
+      try { rate = await rateLimiter.consume(req.socket.remoteAddress ?? "unknown", 30, 60_000); }
+      catch { problem(res, 503, "Rate limiting unavailable", "Lookup is temporarily unavailable."); return; }
+      if (!rate.allowed) { problem(res, 429, "Rate limit exceeded", `Please retry in ${Math.ceil(rate.retryAfterMs / 1000)} seconds.`); return; }
+      const validated = lookupRequestSchema.safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid request", "Provide an identifier type and value in the JSON body."); return; }
+      const summary = await reputationStore.summaryFor(validated.data.type, validated.data.value);
+      if (!summary || summary.reports === 0) { problem(res, 404, "No reputation found", "No community reputation is available for this identifier."); return; }
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ ...summary }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "lookup_failed";
+      if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
+      if (message === "invalid_json") { problem(res, 400, "Invalid lookup", "The request body must be a JSON object."); return; }
+      problem(res, 503, "Lookup unavailable", "Reputation could not be read safely.");
+    }
+    return;
+  }
+  const decideReportMatch = /^\/v1\/reputation\/reports\/([0-9a-f-]{36})\/decide$/i.exec(path);
+  if (req.method === "POST" && decideReportMatch) {
+    if (!await permitModeration(req, res)) return;
+    if (!isCommunityModerator(req)) { problem(res, 401, "Unauthorized", "Moderator credentials are invalid or not configured."); return; }
+    try {
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      const validated = decideReportSchema.safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid moderation action", "Choose verify or reject."); return; }
+      const changed = await reputationStore.decide(decideReportMatch[1]!, validated.data.action);
+      if (!changed) { problem(res, 409, "Report is no longer pending", "Only pending reports can be moderated."); return; }
+      res.writeHead(204, { "cache-control": "no-store" });
+      res.end();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "moderation_failed";
+      if (message === "invalid_json") { problem(res, 400, "Invalid moderation action", "The request body must be a JSON object."); return; }
+      problem(res, 503, "Moderation unavailable", "The report could not be updated safely.");
+    }
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/certificates") {
+    try {
+      if (!await requireSession(req, res)) return;
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      const validated = certificateRequestSchema.safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid certificate request", "Provide a verdict, risk score, and the checked message."); return; }
+      const data = validated.data;
+      const token = issueCertificate({
+        scanId: randomUUID(),
+        verdict: data.verdict,
+        riskScore: data.risk_score,
+        scamTypes: data.scam_types ?? [],
+        message: data.message,
+        issuer: "Shield",
+        secret: authSecret,
+        ...(data.note ? { note: data.note } : {})
+      });
+      const verifiedUntil = new Date(Date.now() + CERTIFICATE_TTL_SECONDS * 1000).toISOString();
+      res.writeHead(201, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ certificate_id: verifyCertificate(token, authSecret)?.certificate_id, card_url: `/c/${token}`, verify_url: `/v1/certificates/${token}`, verified_until: verifiedUntil }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "certificate_failed";
+      if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
+      if (message === "invalid_json") { problem(res, 400, "Invalid certificate request", "The request body must be a JSON object."); return; }
+      problem(res, 503, "Certificate unavailable", "The check card could not be issued.");
+    }
+    return;
+  }
+  const certificateVerifyMatch = /^\/v1\/certificates\/(.+)$/.exec(path);
+  if (req.method === "GET" && certificateVerifyMatch) {
+    const payload = verifyCertificate(certificateVerifyMatch[1]!, authSecret);
+    if (!payload) { problem(res, 400, "Certificate invalid", "This check card could not be verified or has expired."); return; }
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    res.end(JSON.stringify({ valid: true, certificate: payload }));
+    return;
+  }
+  const certificateCardMatch = /^\/c\/(.+)$/.exec(path);
+  if (req.method === "GET" && certificateCardMatch) {
+    const payload = verifyCertificate(certificateCardMatch[1]!, authSecret);
+    res.setHeader("content-security-policy", "default-src 'self'; script-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    res.setHeader("cache-control", "no-store");
+    if (!payload) {
+      res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
+      res.end("<!doctype html><html><head><meta charset='utf-8'><title>Shield check</title><style>body{font-family:system-ui;background:#eef3e6;display:grid;place-items:center;min-height:100vh;margin:0;color:#18362d}a{color:#1f6d43}</style></head><body><main style='background:#fff;padding:34px;border-radius:18px;max-width:420px;text-align:center'><h1>Check card not available</h1><p>This card's signature is invalid or it has expired. Ask the sender to issue a fresh check from the Shield app.</p></main></body></html>");
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(certificateCardHtml(payload));
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/integration/keys") {
+    try {
+      if (!await requireSession(req, res)) return;
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      const validated = integrationKeySchema.safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid key request", "Provide a key name and at least one scope."); return; }
+      const session = await currentSession(req);
+      const raw = generateOpaqueToken(32);
+      const created = await integrationKeyStore.create({ name: validated.data.name, keyHash: hashSecret(raw, authSecret), scopes: validated.data.scopes, createdBy: session?.email ?? "unknown" });
+      res.writeHead(201, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ id: created.id, name: created.name, scopes: created.scopes, key: raw, created_at: created.createdAt, note: "Store this key now. It is shown only once." }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "key_failed";
+      if (message === "invalid_json") { problem(res, 400, "Invalid key request", "The request body must be a JSON object."); return; }
+      problem(res, 503, "Key unavailable", "The integration key could not be created.");
+    }
+    return;
+  }
+  if (req.method === "GET" && path === "/v1/integration/keys") {
+    try {
+      if (!await requireSession(req, res)) return;
+      const keys = await integrationKeyStore.list();
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ keys: keys.map((key) => ({ id: key.id, name: key.name, scopes: key.scopes, created_at: key.createdAt, revoked_at: key.revokedAt, key_preview: `${key.keyHash.slice(0, 8)}…${key.keyHash.slice(-4)}` })) }));
+    } catch {
+      problem(res, 503, "Key unavailable", "Integration keys could not be listed.");
+    }
+    return;
+  }
+  const integrationKeyDelete = /^\/v1\/integration\/keys\/([0-9a-f-]{36})$/i.exec(path);
+  if (req.method === "DELETE" && integrationKeyDelete) {
+    try {
+      if (!await requireSession(req, res)) return;
+      const removed = await integrationKeyStore.revoke(integrationKeyDelete[1]!);
+      if (!removed) { problem(res, 404, "Key not found", "No active key with that id."); return; }
+      res.writeHead(204, { "cache-control": "no-store" });
+      res.end();
+    } catch { problem(res, 503, "Key unavailable", "The integration key could not be revoked."); }
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/integrations/scan") {
+    try {
+      const auth = await resolveIntegration(req, "scans:write");
+      if (auth.status !== "ok") { problem(res, auth.code, "Unauthorized", auth.detail); return; }
+      let rate;
+      try { rate = await rateLimiter.consume(`${auth.tenantId}:integrations`, 40, 60_000); }
+      catch { problem(res, 503, "Rate limiting unavailable", "Scanning is temporarily unavailable."); return; }
+      if (!rate.allowed) { problem(res, 429, "Rate limit exceeded", `Please retry in ${Math.ceil(rate.retryAfterMs / 1000)} seconds.`); return; }
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      const validated = scanRequestSchema.safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid request", "Provide text or combined inputs and an optional Tier 1 language."); return; }
+      const scanInput = validated.data;
+      const combined = scanInput.inputs ? combineInputs(scanInput.inputs as ScanInput[]) : null;
+      const sourceText = scanInput.text ?? combined!.text;
+      const result = await scanText(sourceText, {
+        scanId: randomUUID(),
+        ...(scanInput.language ? { language: scanInput.language as Language } : {}),
+        lookup: async (entities) => lookupIntelligence(entities, reputationStore)
+      });
+      const shield = await buildShieldContext({ text: sourceText, inputs: scanInput.inputs }, reputationStore);
+      const response = combined ? { ...result, input_types: combined.types } : result;
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ ...response, shield }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "request_failed";
+      if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
+      if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
+      problem(res, 400, "Scan failed", message === "Text must contain 2 to 20,000 characters" ? message : "The scan could not be completed.");
+    }
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/integrations/verify-channel") {
+    try {
+      const auth = await resolveIntegration(req, "directory:read");
+      if (auth.status !== "ok") { problem(res, auth.code, "Unauthorized", auth.detail); return; }
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      const validated = verifyChannelSchema.safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid request", "Provide a phone or URL to verify."); return; }
+      const found = findOfficialChannel(validated.data.value, validated.data.type);
+      const summary = await reputationStore.summaryFor(validated.data.type, validated.data.value);
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ value: validated.data.value, official: found.status, channel: found.channel, reputation: summary && summary.reports > 0 ? summary : null }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "request_failed";
+      if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
+      if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
+      problem(res, 503, "Verification unavailable", "The official-channel check could not be completed.");
+    }
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/integrations/lookup") {
+    try {
+      const auth = await resolveIntegration(req, "lookup:read");
+      if (auth.status !== "ok") { problem(res, auth.code, "Unauthorized", auth.detail); return; }
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      const validated = lookupRequestSchema.safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid request", "Provide an identifier type and value."); return; }
+      const summary = await reputationStore.summaryFor(validated.data.type, validated.data.value);
+      if (!summary || summary.reports === 0) { problem(res, 404, "No reputation found", "No community reputation is available for this identifier."); return; }
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ ...summary }));
+    } catch {
+      problem(res, 503, "Lookup unavailable", "Reputation could not be read safely.");
+    }
+    return;
+  }
+  const integrationCertificateMatch = /^\/v1\/integrations\/certificates\/(.+)$/.exec(path);
+  if (req.method === "GET" && integrationCertificateMatch) {
+    const auth = await resolveIntegration(req, "certificates:read");
+    if (auth.status !== "ok") { problem(res, auth.code, "Unauthorized", auth.detail); return; }
+    const payload = verifyCertificate(integrationCertificateMatch[1]!, authSecret);
+    if (!payload) { problem(res, 400, "Certificate invalid", "This check card could not be verified or has expired."); return; }
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    res.end(JSON.stringify({ valid: true, certificate: payload }));
     return;
   }
   if (req.method === "POST" && path === "/v1/lookup") {
@@ -398,6 +643,7 @@ const server = createServer(async (req, res) => {
         const result = await scanText(sourceText, {
           scanId,
           ...(scanInput.language ? { language: scanInput.language as Language } : {}),
+          lookup: async (entities) => lookupIntelligence(entities, reputationStore),
           ...(assess ? { assess } : {})
         });
         return combined ? { ...result, input_types: combined.types } : result;
@@ -421,7 +667,8 @@ const server = createServer(async (req, res) => {
           finally { scanJobs.complete(scanId); }
         })();
         res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-        res.end(JSON.stringify({ ...fast, upgrade_url: `/v1/scans/${scanId}/stream` }));
+        const shield = await buildShieldContext({ text: sourceText, inputs: scanInput.inputs }, reputationStore);
+        res.end(JSON.stringify({ ...fast, upgrade_url: `/v1/scans/${scanId}/stream`, shield }));
         return;
       }
       const result = await runScan();
@@ -438,7 +685,8 @@ const server = createServer(async (req, res) => {
       if (tenantId && repository) { try { await repository.recordUsage(tenantId, "scan"); } catch { logEvent("usage_record_failed", { metric: "scan" }); } }
       void dispatchWebhookEvent(tenantId, "scan.completed", result);
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      res.end(JSON.stringify(result));
+      const shield = await buildShieldContext({ text: sourceText, inputs: scanInput.inputs }, reputationStore);
+      res.end(JSON.stringify({ ...result, shield }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "request_failed";
       if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
@@ -451,6 +699,7 @@ const server = createServer(async (req, res) => {
 });
 
 type TenantAuth = { status: "anonymous" } | { status: "ok"; tenantId: string } | { status: "error"; code: number; detail: string };
+type IntegrationAuth = { status: "ok"; tenantId: string } | { status: "error"; code: number; detail: string };
 
 function parseCookies(req: IncomingMessage): Record<string, string> {
   const header = req.headers.cookie;
@@ -484,6 +733,23 @@ async function currentSession(req: IncomingMessage): Promise<{ email: string } |
     if (!record || record.revokedAt || record.expiresAt.getTime() <= Date.now()) return null;
     return { email: record.email };
   } catch { return null; }
+}
+
+async function requireSession(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+  const session = await currentSession(req);
+  if (!session) { problem(res, 401, "Unauthorized", "Sign in to continue."); return false; }
+  return true;
+}
+
+async function resolveIntegration(req: IncomingMessage, scope: IntegrationScope): Promise<IntegrationAuth> {
+  const key = req.headers["x-api-key"];
+  if (!key || Array.isArray(key)) return { status: "error", code: 401, detail: "Send a valid X-Api-Key header from your integration dashboard." };
+  try {
+    const record = await integrationKeyStore.findByHash(hashSecret(key, authSecret));
+    if (!record) return { status: "error", code: 401, detail: "The API key is invalid or revoked." };
+    if (!record.scopes.includes(scope)) return { status: "error", code: 403, detail: `The key lacks the "${scope}" scope.` };
+    return { status: "ok", tenantId: record.id };
+  } catch { return { status: "error", code: 503, detail: "Authentication is temporarily unavailable." }; }
 }
 
 async function resolveTenant(req: IncomingMessage, scope: string): Promise<TenantAuth> {
@@ -541,7 +807,7 @@ void start().catch(() => { logEvent("server_start_failed"); process.exitCode = 1
 
 function shutdown(): void {
   server.close(() => {
-    void Promise.all([repository?.close(), authStore.close(), rateLimiter.close()]).finally(() => process.exit(0));
+    void Promise.all([repository?.close(), authStore.close(), rateLimiter.close(), reputationStore.close(), integrationKeyStore.close()]).finally(() => process.exit(0));
   });
 }
 process.on("SIGINT", shutdown);
