@@ -11,6 +11,11 @@ import { ScanJobRegistry } from "../apps/api/src/jobs.js";
 import type { ScanResult } from "../packages/risk-engine/src/types.js";
 import { assessRequestSchema, authLoginSchema, authRegisterSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "../apps/api/src/validation.js";
 import { MemoryAuthStore, hashPassword, normalizeEmail, verifyPassword } from "../apps/api/src/auth.js";
+import { canonicalPhone, domainOf, findOfficialChannel } from "../apps/api/src/directory.js";
+import { MemoryReputationStore, identifierKey, intelligenceFromSummaries, labelFor } from "../apps/api/src/reputation.js";
+import { CERTIFICATE_TTL_SECONDS, certificateCardHtml, issueCertificate, verifyCertificate } from "../apps/api/src/certificates.js";
+import { MemoryIntegrationKeyStore } from "../apps/api/src/integration.js";
+import { buildShieldContext, lookupIntelligence } from "../apps/api/src/context.js";
 
 test("policy bands resolve actions and escalate novel or high-value transfers", () => {
   assert.equal(resolveAction(0), "allow");
@@ -170,4 +175,99 @@ test("in-memory auth store handles sign-up, session lookup, and sign-out", async
   await store.revokeSession("tok");
   assert.ok((await store.findSession("tok"))!.revokedAt);
   assert.equal(await store.findSession("nope"), null);
+});
+
+test("official-channel directory normalises phones and domains and finds banks and telcos", () => {
+  assert.equal(canonicalPhone("+234 802 900 0000"), "8029000000");
+  assert.equal(canonicalPhone("08029000000"), "8029000000");
+  assert.equal(domainOf("https://www.gtbank.com/login"), "gtbank.com");
+  assert.equal(findOfficialChannel("+2348029000000", "phone").status, "verified");
+  assert.equal(findOfficialChannel("08029000000", "phone").channel?.shortName, "GTBank");
+  assert.equal(findOfficialChannel("07008250000", "phone").channel?.name, "First Bank of Nigeria");
+  assert.equal(findOfficialChannel("https://secure.gtbank.com/app", "url").status, "verified");
+  assert.equal(findOfficialChannel("https://fakebank.example/login", "url").status, "not_found");
+  assert.equal(findOfficialChannel("", "url").status, "not_found");
+});
+
+test("reputation store tracks pending and verified reports with blind identifiers", async () => {
+  const store = new MemoryReputationStore();
+  const pepper = Buffer.from("test-pepper");
+  assert.notEqual(identifierKey("phone", "08029000000"), identifierKey("phone", "08029000000", pepper));
+  const first = await store.submit({ kind: "phone", value: "+234 802 900 0000", scamType: "bank_impersonation", source: "check" });
+  assert.equal(first.status, "pending");
+  assert.equal(first.label, "8029000000");
+  const before = await store.summaryFor("phone", "08029000000");
+  assert.ok(before);
+  assert.equal(before.verified, 0);
+  assert.equal(before.pending, 1);
+  assert.equal(await store.decide(first.id, "verify"), true);
+  assert.equal(await store.decide(first.id, "verify"), false);
+  const after = await store.summaryFor("phone", "+2348029000000");
+  assert.ok(after);
+  assert.equal(after.verified, 1);
+  assert.equal(after.pending, 0);
+  assert.equal(await store.summaryFor("phone", "07000000000"), null);
+  assert.equal(labelFor("account", "0123456789"), "•••• 6789");
+});
+
+test("intelligence favours verified reports and drives hard verdicts", () => {
+  const base = { kind: "phone" as const, value: "x", reports: 4, verified: 0, pending: 4, firstSeen: "a", lastSeen: "b" };
+  const unverified = intelligenceFromSummaries([base]);
+  assert.ok(unverified);
+  assert.equal(unverified.verified, false);
+  assert.equal(unverified.reports, 4);
+  const intelligence = intelligenceFromSummaries([{ ...base, reports: 5, verified: 2, pending: 3 }]);
+  assert.ok(intelligence);
+  assert.equal(intelligence.reports, 5);
+  assert.equal(intelligence.verified, true);
+});
+
+test("buildShieldContext produces reputation and official-channel context", async () => {
+  const store = new MemoryReputationStore(Buffer.from("pepper"));
+  await store.submit({ kind: "phone", value: "08029000000", scamType: "bank_impersonation", source: "check" });
+  const context = await buildShieldContext({ text: "Reply to 08029000000 urgently or call the bank on +2348029000000", inputs: [] }, store);
+  assert.ok(context.official_channels.some((channel) => channel.status === "verified" && channel.shortName === "GTBank"));
+  const reported = context.reputation.find((item) => item.value === "+2348029000000");
+  assert.ok(reported);
+  assert.equal(reported.verified + reported.pending, 1);
+});
+
+test("shield lookup hook feeds reputation intelligence into scans", async () => {
+  const store = new MemoryReputationStore();
+  await store.submit({ kind: "phone", value: "08029000000", scamType: "bank_impersonation", source: "check" });
+  await store.decide((await store.pending())[0]!.id, "verify");
+  const intelligence = await lookupIntelligence({ urls: [], phones: ["+2348029000000"], accounts: [], amounts: [], brands: [] }, store);
+  assert.ok(intelligence);
+  assert.equal(intelligence.verified, true);
+});
+
+test("certificates issue, verify, reject tampering, and expire safely", () => {
+  const secret = Buffer.from("cert-secret");
+  const issuedAt = Date.now() - 1_000;
+  const token = issueCertificate({ scanId: "scan-1", verdict: "likely_scam", riskScore: 71, scamTypes: ["bank_impersonation"], message: "Send your OTP", issuer: "self", secret, now: new Date(issuedAt) });
+  const payload = verifyCertificate(token, secret);
+  assert.ok(payload);
+  assert.equal(payload.verdict, "likely_scam");
+  assert.equal(payload.issuer, "self");
+  assert.equal(verifyCertificate(`${token}x`, secret), null);
+  assert.equal(verifyCertificate(token.slice(0, 20), secret), null);
+  assert.equal(verifyCertificate(token, secret, issuedAt + CERTIFICATE_TTL_SECONDS * 1000 + 1), null);
+  assert.equal(verifyCertificate("not-a-token", secret), null);
+  const card = certificateCardHtml(payload);
+  assert.ok(card.includes("Likely scam"));
+  assert.ok(card.includes("Send your OTP"));
+  assert.ok(!card.includes("<script"));
+});
+
+test("integration key lifecycle: create, authenticate, scope-gate, and revoke", async () => {
+  const store = new MemoryIntegrationKeyStore();
+  const raw = "sk_live_testraw";
+  const created = await store.create({ name: "core-banking", keyHash: raw, scopes: ["scans:write", "lookup:read"], createdBy: "ada@example.com" });
+  assert.ok(created.id);
+  const found = await store.findByHash(raw);
+  assert.ok(found);
+  assert.ok((found.scopes as string[]).includes("scans:write"));
+  assert.equal(await store.findByHash("wrong-hash"), null);
+  assert.equal(await store.revoke(created.id), true);
+  assert.equal(await store.findByHash(raw), null);
 });
