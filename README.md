@@ -7,7 +7,7 @@
 <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D22-3c873a" alt="Node" /></a>
 <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/typescript-5.x-3178c6" alt="TypeScript" /></a>
 <a href="#verification"><img src="https://img.shields.io/badge/checks-typecheck%20%7C%20lint%20%7C%20test%20%7C%20eval-2ea043" alt="Checks" /></a>
-<a href="#verification"><img src="https://img.shields.io/badge/tests-34%20passing-2ea043" alt="Tests" /></a>
+<a href="#verification"><img src="https://img.shields.io/badge/tests-37%20passing-2ea043" alt="Tests" /></a>
 <a href="#verification"><img src="https://img.shields.io/badge/eval-recall%201.00%20%7C%20FPR%200.00-2ea043" alt="Eval" /></a>
 <a href="#licence"><img src="https://img.shields.io/badge/license-proprietary-lightgrey" alt="License" /></a>
 <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs welcome" /></a>
@@ -26,7 +26,7 @@ Requirements: Node.js 22 or newer and npm. No third-party account is needed to r
 2. Copy `.env.example` to `.env` (PowerShell: `Copy-Item .env.example .env`). Leave external credentials blank for rules-only use.
 3. Install dependencies: `npm install`.
 4. Start the service and PWA: `npm run dev`.
-5. Open `http://localhost:3001` and scan a text message. Health checks are at `/healthz` and `/readyz`.
+5. Open `http://localhost:3001`. The landing page leads to **Get started** → an email/password sign-up or sign-in page → the guarded scanner at `/app`. Health checks are at `/healthz` and `/readyz`.
 6. Run checks: `npm run typecheck`, `npm run lint`, `npm test`, and `npm run eval`.
 
 For visual QA, start the app and run `npm run screenshots` in an environment with Microsoft Edge installed; it captures exact 390px and 1440px viewports into `docs/screenshots/`.
@@ -35,7 +35,7 @@ Add `OPENAI_API_KEY` and `OPENAI_MODEL` to the environment to enable the structu
 
 ## Services and deployment status
 
-`infra/docker-compose.yml` describes local PostgreSQL and Redis. To use PostgreSQL locally, set `POSTGRES_PASSWORD` and `DATABASE_URL` in `.env`, start Compose, then apply the migration in `infra/migrations/` to the isolated development database. The API has PostgreSQL persistence and Redis rate-limit adapters, but neither has been runtime-verified in this environment; queues, object storage, account onboarding, and self-service authentication are incomplete. This repository is an active implementation and is not launch-ready. Do not expose it to public traffic.
+`infra/docker-compose.yml` describes local PostgreSQL and Redis. To use PostgreSQL locally, set `POSTGRES_PASSWORD` and `DATABASE_URL` in `.env`, start Compose, then apply the migration in `infra/migrations/` (including `0004_auth.sql` for consumer accounts and sessions) to the isolated development database. The API has PostgreSQL persistence and Redis rate-limit adapters, but neither has been runtime-verified in this environment; queues, object storage, and account onboarding remain incomplete. Consumer email/password authentication works without a database via a process-local store that is only suitable for development, and stores sessions in an `HttpOnly` cookie. This repository is an active implementation and is not launch-ready. Do not expose it to public traffic.
 
 Production requires managed PostgreSQL/Redis/object storage, TLS termination, a KMS-backed keyring, OpenAI account configuration, rate limiting and auth backed by shared infrastructure, monitoring, backups, and privacy/security review. These external dependencies have not been provisioned and this repository is not launch-ready.
 
@@ -46,6 +46,7 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 - `POST /v1/lookup` accepts an identifier in JSON (not a URL) and returns only public reputation aggregates when a configured database has data.
 - `GET /v1/usage` reports tenant metering; `POST/GET/DELETE /v1/webhooks` manage signed subscriptions (HMAC-SHA256, replay protection, retry/backoff); `POST /v1/voice/speak` returns warning audio in a Tier 1 language.
 - `GET /healthz` reports process health; `GET /readyz` reports configured scan mode. The full contract is in `docs/openapi.yaml`.
+- `POST /v1/auth/register` and `POST /v1/auth/login` create or verify an email/password account and set an `HttpOnly` session cookie (`shield_session`); `GET /v1/auth/me` returns the signed-in user; `POST /v1/auth/logout` revokes the session. `GET /app` is served only with a valid session and redirects to `/auth` otherwise. Consumer accounts persist when `DATABASE_URL` is set (see `0004_auth.sql`); without it, development uses a process-local store.
 - The TypeScript client is `packages/sdk/src/index.ts`; banks can embed `apps/web/public/snippet.js` on a transfer page to render the warning from `/v1/assess`.
 - `/recovery.html` provides first-hour account-safety steps and links to current official CBN guidance checked in the dated `data/recovery.json` file.
 - The scanner can decode a user-selected raster QR image locally in browsers that implement `BarcodeDetector`; decoded content is shown for review and submitted only when the user starts a scan. `apps/api/src/ingestion.ts` validates uploaded image/document/audio magic bytes, but full server-side media analysis is not yet wired to an endpoint. Warning audio is available via `POST /v1/voice/speak`.
@@ -60,6 +61,7 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 ├── apps/
 │   ├── api/
 │   │   └── src/
+│   │       ├── auth.ts
 │   │       ├── env.ts
 │   │       ├── ingestion.ts
 │   │       ├── jobs.ts
@@ -72,9 +74,13 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 │       └── public/
 │           ├── data/
 │           │   └── recovery.json
+│           ├── app.html
 │           ├── app.js
+│           ├── auth.html
+│           ├── auth.js
 │           ├── icon.svg
 │           ├── index.html
+│           ├── landing.js
 │           ├── manifest.webmanifest
 │           ├── qr.js
 │           ├── recovery.html
@@ -105,7 +111,8 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 │   ├── migrations/
 │   │   ├── 0001_foundation.sql
 │   │   ├── 0002_platform.sql
-│   │   └── 0003_knowledge.sql
+│   │   ├── 0003_knowledge.sql
+│   │   └── 0004_auth.sql
 │   ├── docker-compose.yml
 │   └── Dockerfile
 ├── packages/
@@ -160,13 +167,13 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 └── tsconfig.json
 ```
 
-- `apps/api/`: Node HTTP service, validation, PostgreSQL repository, scan jobs, rate limiting, and the OpenAI provider.
-- `apps/web/public/`: installable web shell, scanner client, local QR decoder, recovery page, and the embeddable bank snippet.
+- `apps/api/`: Node HTTP service, validation, PostgreSQL repository, scan jobs, rate limiting, email/password login, and the OpenAI provider.
+- `apps/web/public/`: installable web shell (landing → auth → guarded scanner), client-side QR decoder, recovery page, and the embeddable bank snippet.
 - `packages/risk-engine/`: normalization, entity extraction, rules, fusion, localization, policy, SSRF-safe URL analysis, combined scans, and self-authored knowledge.
 - `packages/channels/`: WhatsApp, SMS, USSD, and IVR adapters and local simulators.
 - `packages/sdk/`: dependency-free TypeScript API client.
 - `packages/shared/`: crypto, redaction, safe logging, identifier normalization, webhook signing, and on-device history.
-- `infra/`: Dockerfile, local compose, and numbered SQL migrations. Seed shared reference data with `npm run seed` (requires `DATABASE_URL`).
+- `infra/`: Dockerfile, local compose, and numbered SQL migrations (foundation, platform, knowledge, auth). Seed shared reference data with `npm run seed` (requires `DATABASE_URL`).
 - `config/brand.ts`: brand configuration.
 - `docs/`: OpenAPI contract, threat model, degraded-dependency matrix, AI data handling, runbooks, and legal drafts.
 - `eval/`: self-authored fixtures and a metric runner; figures are a pipeline check, not representative efficacy evidence.
