@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="theme-color" content="#0d2925">
+    <meta name="description" content="Check a suspicious message before you send money or share a code.">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/icon.svg">
+    <link rel="mask-icon" href="/icon.svg" color="#0d2925">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="stylesheet" href="/styles.css">
+    <title>Scanner — Shield</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Shield home"><span class="brand-mark" aria-hidden="true">S</span><span>shield<span class="brand-dot">.</span></span></a>
+      <div class="account-bar">
+        <span class="top-note"><span class="live-dot" aria-hidden="true"></span>Common details redacted</span>
+        <span id="user-email" class="account-email"></span>
+        <button id="signout" class="btn btn-ghost btn-small" type="button">Sign out</button>
+      </div>
+    </header>
+    <main>
+      <section class="hero">
+        <div class="hero-copy"><p class="eyebrow">A calmer moment before money moves</p><h1>Before you send it,<br><em>scan it.</em></h1><p class="lead">A strange alert. A rushed request. A link that feels off. Check it here before you act.</p><div class="trust-line"><span aria-hidden="true">◆</span> Your message is checked without storing the original text.</div></div>
+        <section class="scan-card" aria-labelledby="scan-title">
+          <div class="card-heading"><div><p class="eyebrow">Quick check</p><h2 id="scan-title">What did they send?</h2></div><span class="step-mark" aria-hidden="true">01</span></div>
+          <label class="sr-only" for="message">Paste a message, link, or payment request</label>
+          <textarea id="message" maxlength="20000" placeholder="Paste the message here…" spellcheck="true" autocomplete="off"></textarea>
+          <div class="qr-controls">
+            <input id="qr-file" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp,image/avif,image/bmp" capture="environment" aria-label="Choose an image containing a QR code">
+            <button id="choose-qr" class="qr-button" type="button">Read a QR image</button>
+            <span id="qr-status" class="qr-status" aria-live="polite">QR image stays on this device. Review the decoded text before scanning.</span>
+          </div>
+          <div class="input-meta"><span id="char-count">0 / 20,000</span><label for="language">Reply in<select id="language" aria-label="Reply language"><option value="en">English</option><option value="pcm">Nigerian Pidgin</option><option value="yo">Yorùbá</option><option value="ha">Hausa</option><option value="ig">Igbo</option></select></label></div>
+          <button id="scan" class="scan-button" type="button"><span>Check this message</span><span aria-hidden="true">→</span></button>
+          <p class="privacy-note">We redact common private details before analysis. Never paste your PIN or password.</p>
+          <div id="result" class="result" aria-live="polite" aria-atomic="true" hidden></div>
+          <section id="community-report" class="community-report" aria-labelledby="report-title" hidden>
+            <h3 id="report-title">Report a suspicious identifier</h3>
+            <p>Reports stay pending until reviewed. Identifiers are encrypted for review; a keyed blind index is used for matching. Do not include PINs, passwords, or one-time codes.</p>
+            <form id="report-form">
+              <label for="report-type">What are you reporting?</label>
+              <select id="report-type" required><option value="phone">Phone number</option><option value="account">Bank account (bank code and number)</option><option value="url">Web address</option></select>
+              <label for="report-value">Identifier</label>
+              <input id="report-value" type="text" maxlength="2048" required autocomplete="off">
+              <label for="report-category">Scam category</label>
+              <select id="report-category" required><option value="bank_impersonation">Bank impersonation</option><option value="fake_credit_alert">Fake payment or refund</option><option value="phishing_link">Suspicious link</option><option value="advance_fee">Upfront fee</option><option value="investment_scam">Investment offer</option><option value="job_scam">Job offer</option><option value="grant_refund">Grant or benefit</option><option value="sim_swap_social">Account takeover</option><option value="romance">Romance or impersonation</option><option value="pos_fraud">POS payment fraud</option><option value="other">Other</option></select>
+              <label for="report-evidence">Short note for the reviewer (optional)</label>
+              <textarea id="report-evidence" maxlength="2000" rows="3" autocomplete="off"></textarea>
+              <label class="report-consent"><input id="report-consent" type="checkbox" required> I agree to send this identifier and note for fraud review. It will affect shared reputation only if verified.</label>
+              <button id="report-submit" class="qr-button" type="submit">Send report for review</button>
+              <p id="report-status" class="qr-status" aria-live="polite"></p>
+            </form>
+          </section>
+        </section>
+      </section>
+      <section class="how"><div><p class="eyebrow">Simple by design</p><h2>Take a breath.<br> Check the signs.</h2></div><div class="how-item"><span class="how-number">1</span><div><h3>Paste what feels wrong</h3><p>A text, payment request, or link. Keep your PIN and password private.</p></div></div><div class="how-item"><span class="how-number">2</span><div><h3>See what to check</h3><p>Shield points out pressure tactics and explains why you should pause.</p></div></div><div class="how-item"><span class="how-number">3</span><div><h3>Verify through official channels</h3><p>Open your bank app or call the number on your card. Never trust a number in a suspicious message.</p></div></div></section>
+      <aside class="disclaimer"><span aria-hidden="true">i</span><p><strong>A scan is one signal, not a guarantee.</strong> A “no scam signs found” result does not prove a message is genuine. Confirm payments in your own bank app.</p></aside>
+    </main>
+    <footer><a class="brand footer-brand" href="/" aria-label="Shield home"><span class="brand-mark" aria-hidden="true">S</span><span>shield<span class="brand-dot">.</span></span></a><p>Built to help you pause, check, and choose.</p><span>© <span id="year"></span> Shield</span></footer>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
