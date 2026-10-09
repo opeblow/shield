@@ -9,13 +9,15 @@ import { SimulatedSpeechProvider } from "../packages/channels/src/voice.js";
 import { ReplayGuard, deliverWebhook, verifyWebhookSignature, webhookSignature } from "../packages/shared/src/webhooks.js";
 import { ScanJobRegistry } from "../apps/api/src/jobs.js";
 import type { ScanResult } from "../packages/risk-engine/src/types.js";
-import { assessRequestSchema, authLoginSchema, authRegisterSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "../apps/api/src/validation.js";
+import { assessRequestSchema, authLoginSchema, authRegisterSchema, batchScanRequestSchema, linkPreviewRequestSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "../apps/api/src/validation.js";
 import { MemoryAuthStore, hashPassword, normalizeEmail, verifyPassword } from "../apps/api/src/auth.js";
 import { canonicalPhone, domainOf, findOfficialChannel } from "../apps/api/src/directory.js";
 import { MemoryReputationStore, identifierKey, intelligenceFromSummaries, labelFor } from "../apps/api/src/reputation.js";
 import { CERTIFICATE_TTL_SECONDS, certificateCardHtml, issueCertificate, verifyCertificate } from "../apps/api/src/certificates.js";
 import { MemoryIntegrationKeyStore } from "../apps/api/src/integration.js";
 import { buildShieldContext, lookupIntelligence } from "../apps/api/src/context.js";
+import { WaveWatch } from "../apps/api/src/waves.js";
+import { SpeechProviderRegistry } from "../packages/channels/src/voice.js";
 
 test("policy bands resolve actions and escalate novel or high-value transfers", () => {
   assert.equal(resolveAction(0), "allow");
@@ -270,4 +272,72 @@ test("integration key lifecycle: create, authenticate, scope-gate, and revoke", 
   assert.equal(await store.findByHash("wrong-hash"), null);
   assert.equal(await store.revoke(created.id), true);
   assert.equal(await store.findByHash(raw), null);
+});
+
+test("link preview fetches bounded HTML, extracts meta, and refuses unsafe hosts", async () => {
+  const { previewUrl } = await import("../apps/api/src/preview.js");
+  const resolve = async (host: string): Promise<string[]> =>
+    host === "evil.example" ? ["10.0.0.9"] : ["93.184.216.34"];
+  const page = "<html><head><title>Claims page</title><meta name=\"description\" content=\"Click to claim\"></head><body>link</body></html>";
+  const fetchImpl = (async () => new Response(page, { status: 200, headers: { "content-type": "text/html" } })) as unknown as typeof fetch;
+  const ok = await previewUrl("https://start.example/claim", { resolve, fetchImpl, maxBytes: 16_384 });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.title, "Claims page");
+  assert.equal(ok.description, "Click to claim");
+  assert.equal(ok.content_type, "text/html");
+  assert.equal(ok.truncated, false);
+  assert.ok(Array.isArray(ok.signals));
+  await assert.rejects(previewUrl("https://evil.example/", { resolve, fetchImpl }), /non-public/);
+  const binary = await previewUrl("https://start.example/b", { resolve, fetchImpl: (async () => new Response("PNG", { status: 200, headers: { "content-type": "image/png" } })) as unknown as typeof fetch });
+  assert.equal(binary.title, null);
+});
+
+test("wave detector fires once per cooldown on verified-report surges", () => {
+  const marks: number[] = [];
+  const watch = new WaveWatch({ now: () => marks.at(-1) ?? 0, windowMs: 30 * 60_000, threshold: 3, cooldownMs: 60_000, resolveMs: 60_000 });
+  for (const t of [0, 10_000, 20_000]) {
+    marks.push(t);
+    const wave = watch.recordVerified("phone", "08029000000");
+    if (t === 20_000) {
+      assert.ok(wave);
+      assert.equal(wave.kind, "phone");
+      assert.equal(wave.count, 3);
+      assert.equal(wave.status, "active");
+    } else {
+      assert.equal(wave, null);
+    }
+  }
+  marks.push(50_000);
+  assert.equal(watch.recordVerified("phone", "08029000000"), null, "repeat alert suppressed inside 60s cooldown");
+  marks.push(90_000);
+  const again = watch.recordVerified("phone", "08029000000");
+  assert.ok(again, "a new surge after the cooldown fires again");
+  assert.equal(again.id, watch.recent().at(-1)?.id ?? null, "same wave identity persists");
+  const secondWaveAt = 90_000;
+  marks.push(secondWaveAt + 59_000);
+  assert.equal(watch.tick(secondWaveAt + 59_000).length, 0, "still active inside resolve window");
+  marks.push(secondWaveAt + 61_000);
+  const resolved = watch.tick(secondWaveAt + 61_000);
+  assert.equal(resolved.length, 1, "one wave resolves after its resolve window");
+  assert.equal(resolved[0]!.status, "resolved");
+});
+
+test("speech registry resolves preferred and auto providers", () => {
+  const registry = new SpeechProviderRegistry().register("simulated", new SimulatedSpeechProvider());
+  assert.deepEqual(registry.names(), ["simulated"]);
+  assert.equal(registry.resolve("missing"), null);
+  assert.equal(registry.resolve("simulated")?.name, "simulated");
+  assert.equal(registry.resolve("auto")?.name, "simulated");
+});
+
+test("wave 2 validation schemas gate preview and batch payloads", () => {
+  assert.equal(linkPreviewRequestSchema.safeParse({ url: "https://example.com/x" }).success, true);
+  assert.equal(linkPreviewRequestSchema.safeParse({ url: "ftp://example.com" }).success, false);
+  assert.equal(linkPreviewRequestSchema.safeParse({ url: "javascript:alert(1)" }).success, false);
+  assert.equal(batchScanRequestSchema.safeParse({ items: [] }).success, false);
+  assert.equal(batchScanRequestSchema.safeParse({ items: [{ text: "h" }] }).success, false);
+  assert.equal(batchScanRequestSchema.safeParse({ items: [{ text: "check this link https://x.co/a now" }] }).success, true);
+  assert.equal(batchScanRequestSchema.safeParse({ items: Array.from({ length: 26 }, () => ({ text: "hello world check now" })) }).success, false);
+  const many = batchScanRequestSchema.safeParse({ items: Array.from({ length: 25 }, () => ({ text: "hello world check now" })) });
+  assert.equal(many.success, true);
 });
