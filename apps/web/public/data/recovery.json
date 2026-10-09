@@ -1,0 +1,17 @@
+{
+  "sourceCheckedAt": "2026-10-09",
+  "language": "en",
+  "title": "If money has already moved",
+  "intro": "Act quickly. These steps can help protect your accounts, but they cannot guarantee a reversal.",
+  "steps": [
+    { "title": "Contact your bank now", "text": "Use the bank app or the number printed on your card. Ask the bank to secure affected accounts, block compromised cards or channels, open a fraud case, and explain whether a dispute or reversal request is possible." },
+    { "title": "Secure accounts and your phone line", "text": "From a device you trust, change exposed passwords, sign out other sessions, and contact your mobile provider if your SIM or messaging account may be at risk. Never share an OTP or PIN, even with someone claiming to help." },
+    { "title": "Keep evidence safely", "text": "Save the message, transaction reference, amount, date and time, and any case number from your bank. Do not edit the original evidence or post account details publicly." },
+    { "title": "Report through official channels", "text": "Follow the relevant official reporting instructions. For a bank complaint, contact your bank first; the Central Bank of Nigeria explains when and how to escalate an unresolved complaint." },
+    { "title": "Protect people around you", "text": "Warn contacts through a separate trusted channel if your phone or messaging account was taken over. Ask someone you trust to stay with you while you secure accounts." }
+  ],
+  "sources": [
+    { "name": "Central Bank of Nigeria: Fraud and Scam Awareness", "url": "https://www.cbn.gov.ng/supervision/cpdfraudandscam.html" },
+    { "name": "Central Bank of Nigeria: Complaint Lodgement", "url": "https://www.cbn.gov.ng/FinInc/FinLit/LodgeComplaint.html" }
+  ]
+}
