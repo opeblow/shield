@@ -37,7 +37,7 @@ Add `OPENAI_API_KEY` and `OPENAI_MODEL` to the environment to enable the structu
 
 `infra/docker-compose.yml` describes local PostgreSQL and Redis. To use PostgreSQL locally, set `POSTGRES_PASSWORD` and `DATABASE_URL` in `.env`, start Compose, then apply the migration in `infra/migrations/` to the isolated development database. The API has PostgreSQL persistence and Redis rate-limit adapters, but neither has been runtime-verified in this environment; queues, object storage, account onboarding, and self-service authentication are incomplete. This repository is an active implementation and is not launch-ready. Do not expose it to public traffic.
 
-Production requires managed PostgreSQL/Redis/object storage, TLS termination, a KMS-backed keyring, OpenAI account configuration, rate limiting and auth backed by shared infrastructure, monitoring, backups, and privacy/security review. See [BLOCKERS.md](BLOCKERS.md) and [DECISIONS.md](DECISIONS.md).
+Production requires managed PostgreSQL/Redis/object storage, TLS termination, a KMS-backed keyring, OpenAI account configuration, rate limiting and auth backed by shared infrastructure, monitoring, backups, and privacy/security review. These external dependencies have not been provisioned and this repository is not launch-ready.
 
 ## Product interfaces
 
@@ -51,19 +51,127 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 - The scanner can decode a user-selected raster QR image locally in browsers that implement `BarcodeDetector`; decoded content is shown for review and submitted only when the user starts a scan. `apps/api/src/ingestion.ts` validates uploaded image/document/audio magic bytes, but full server-side media analysis is not yet wired to an endpoint. Warning audio is available via `POST /v1/voice/speak`.
 - WhatsApp, SMS, USSD, and IVR simulators are in `packages/channels/`; they scan locally and never send messages to real subscribers.
 
-## Repository guide
+## Project structure
 
-- `apps/api/`: Node HTTP service and OpenAI provider adapter.
-- `apps/web/public/`: responsive installable web shell and scanner client.
-- `packages/risk-engine/`: normalization, entity extraction, rules, fusion, localization, policy, SSRF-safe URL fetch, combined scans, self-authored knowledge.
+```
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── apps/
+│   ├── api/
+│   │   └── src/
+│   │       ├── env.ts
+│   │       ├── ingestion.ts
+│   │       ├── jobs.ts
+│   │       ├── provider.ts
+│   │       ├── rate-limit.ts
+│   │       ├── repository.ts
+│   │       ├── server.ts
+│   │       └── validation.ts
+│   └── web/
+│       └── public/
+│           ├── data/
+│           │   └── recovery.json
+│           ├── app.js
+│           ├── icon.svg
+│           ├── index.html
+│           ├── manifest.webmanifest
+│           ├── qr.js
+│           ├── recovery.html
+│           ├── recovery.js
+│           ├── snippet.js
+│           ├── styles.css
+│           └── sw.js
+├── config/
+│   └── brand.ts
+├── docs/
+│   ├── legal/
+│   │   └── LEGAL_DRAFTS.md
+│   ├── runbooks/
+│   │   ├── BACKUP_RESTORE.md
+│   │   ├── INCIDENT_RESPONSE.md
+│   │   └── KEY_ROTATION.md
+│   ├── screenshots/
+│   │   ├── shield-desktop.png
+│   │   └── shield-mobile.png
+│   ├── AI_DATA_HANDLING.md
+│   ├── DEGRADED_MATRIX.md
+│   ├── openapi.yaml
+│   └── THREAT_MODEL.md
+├── eval/
+│   ├── cases.ts
+│   └── run.ts
+├── infra/
+│   ├── migrations/
+│   │   ├── 0001_foundation.sql
+│   │   ├── 0002_platform.sql
+│   │   └── 0003_knowledge.sql
+│   ├── docker-compose.yml
+│   └── Dockerfile
+├── packages/
+│   ├── channels/
+│   │   └── src/
+│   │       ├── simulators.ts
+│   │       ├── voice.ts
+│   │       └── whatsapp.ts
+│   ├── risk-engine/
+│   │   └── src/
+│   │       ├── assess.ts
+│   │       ├── catalog.ts
+│   │       ├── combined.ts
+│   │       ├── entities.ts
+│   │       ├── knowledge.ts
+│   │       ├── policy.ts
+│   │       ├── rules.ts
+│   │       ├── scan.ts
+│   │       ├── types.ts
+│   │       ├── url-analysis.ts
+│   │       └── url-fetch.ts
+│   ├── sdk/
+│   │   └── src/
+│   │       └── index.ts
+│   └── shared/
+│       └── src/
+│           ├── browser-history.ts
+│           ├── crypto.ts
+│           ├── identifiers.ts
+│           ├── redaction.ts
+│           ├── safe-log.ts
+│           └── webhooks.ts
+├── scripts/
+│   ├── capture-screenshots.mjs
+│   ├── create-tenant-key.ts
+│   └── seed.ts
+├── tests/
+│   ├── load/
+│   │   └── scan.js
+│   ├── foundation.test.ts
+│   ├── platform.test.ts
+│   └── qr.test.mjs
+├── .env.example
+├── .gitignore
+├── CODE_OF_CONDUCT.md
+├── CONTRIBUTING.md
+├── eslint.config.js
+├── package-lock.json
+├── package.json
+├── README.md
+├── SECURITY.md
+└── tsconfig.json
+```
+
+- `apps/api/`: Node HTTP service, validation, PostgreSQL repository, scan jobs, rate limiting, and the OpenAI provider.
+- `apps/web/public/`: installable web shell, scanner client, local QR decoder, recovery page, and the embeddable bank snippet.
+- `packages/risk-engine/`: normalization, entity extraction, rules, fusion, localization, policy, SSRF-safe URL analysis, combined scans, and self-authored knowledge.
+- `packages/channels/`: WhatsApp, SMS, USSD, and IVR adapters and local simulators.
 - `packages/sdk/`: dependency-free TypeScript API client.
-- `packages/shared/`: cryptographic primitives, redaction, log scrubbing, webhook signing/replay.
-- `apps/api/src/ingestion.ts`: uploaded-artifact validation.
-- `infra/migrations/`: PostgreSQL schema, RLS policies and knowledge tables. Seed shared reference data with `npm run seed` (requires `DATABASE_URL`).
-- `docs/openapi.yaml`, `docs/runbooks/`, `docs/DEGRADED_MATRIX.md`: API contract and operations.
-- `tests/load/scan.js`: k6 load profile for the scan path.
-- `eval/`: self-authored fixtures and a metric runner; current results are a pipeline check, not a representative efficacy claim.
-- `PLAN.md`: milestone checklist and outstanding work.
+- `packages/shared/`: crypto, redaction, safe logging, identifier normalization, webhook signing, and on-device history.
+- `infra/`: Dockerfile, local compose, and numbered SQL migrations. Seed shared reference data with `npm run seed` (requires `DATABASE_URL`).
+- `config/brand.ts`: brand configuration.
+- `docs/`: OpenAPI contract, threat model, degraded-dependency matrix, AI data handling, runbooks, and legal drafts.
+- `eval/`: self-authored fixtures and a metric runner; figures are a pipeline check, not representative efficacy evidence.
+- `scripts/`: tenant-key CLI, knowledge seed, and screenshot capture.
+- `tests/`: foundation, platform, and QR suites plus the k6 load profile.
 
 ## Data handling
 
@@ -71,7 +179,7 @@ Text is redacted in memory before a configured model call and is not persisted b
 
 ## Language quality
 
-English, Nigerian Pidgin, Yoruba, Hausa, and Igbo message catalogs and local rule examples are present. Their output has not been verified by native speakers. Do not present the translations as professionally reviewed. See `BLOCKERS.md` for review and production integration requirements.
+English, Nigerian Pidgin, Yoruba, Hausa, and Igbo message catalogs and local rule examples are present. Their output has not been verified by native speakers. Do not present the translations as professionally reviewed; an external native-speaker review is still required before launch.
 
 ## Verification
 
