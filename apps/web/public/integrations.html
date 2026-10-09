@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="theme-color" content="#0d2925">
+    <meta name="description" content="">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <title>Shield · Developer keys</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Shield home"><span class="brand-mark" aria-hidden="true">S</span><span>shield<span class="brand-dot">.</span></span></a>
+      <nav class="nav-actions" aria-label="Primary">
+        <a class="btn btn-ghost btn-small" href="/docs" aria-current="page">API reference</a>
+        <a class="btn btn-ghost btn-small" href="/app">Scanner</a>
+        <button id="signout-btn" class="btn btn-ghost btn-small" type="button" data-hidden>Sign out</button>
+      </nav>
+    </header>
+
+    <main class="page integrations-page">
+      <section class="page-head">
+        <h1>Developer keys</h1>
+        <p>Mint, inspect and revoke the API keys your banking systems use. The raw key is shown once — store it in your secret manager.</p>
+      </section>
+
+      <section class="card" aria-labelledby="create-heading">
+        <h2 id="create-heading">Create a key</h2>
+        <form id="create-key-form" class="form-grid">
+          <label class="field field-wide">
+            <span>Key name</span>
+            <input name="name" type="text" maxlength="80" placeholder="core-banking-transfer-gate" required autocomplete="off">
+          </label>
+          <fieldset class="field field-wide">
+            <legend>Scopes</legend>
+            <div class="checkbox-row">
+              <label><input type="checkbox" name="scopes" value="scans:write" checked> <code>scans:write</code> run scam scans</label>
+              <label><input type="checkbox" name="scopes" value="lookup:read"> <code>lookup:read</code> read reputation</label>
+              <label><input type="checkbox" name="scopes" value="directory:read"> <code>directory:read</code> verify official channels</label>
+              <label><input type="checkbox" name="scopes" value="certificates:read"> <code>certificates:read</code> verify check cards</label>
+            </div>
+          </fieldset>
+          <div class="form-actions field-wide">
+            <button class="btn btn-primary" type="submit">Create integration key</button>
+          </div>
+        </form>
+        <p id="create-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="card" aria-labelledby="keys-heading" id="keys-section" data-hidden>
+        <h2 id="keys-heading">Active keys</h2>
+        <div class="table-wrap">
+          <table class="keys-table">
+            <thead><tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+            <tbody id="keys-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="curl-heading">
+        <h2 id="curl-heading">Call a scan via curl</h2>
+        <pre class="code"><code>curl https://your-shield-host/v1/integrations/scan \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: <span data-replace="key">PRESS-PLAY</span>" \
+  -d '{"text":"Please send your OTP to 0912 345 6789 now","language":"en"}'</code><button data-copy>Copy</button></pre>
+        <p class="hint">Replace <code>your-shield-host</code> with this site's URL. Keep keys out of client-side code — call from your server.</p>
+      </section>
+    </main>
+
+    <script type="module" src="/integrations.js"></script>
+  </body>
+</html>
