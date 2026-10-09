@@ -7,7 +7,7 @@
 <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D22-3c873a" alt="Node" /></a>
 <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/typescript-5.x-3178c6" alt="TypeScript" /></a>
 <a href="#verification"><img src="https://img.shields.io/badge/checks-typecheck%20%7C%20lint%20%7C%20test%20%7C%20eval-2ea043" alt="Checks" /></a>
-<a href="#verification"><img src="https://img.shields.io/badge/tests-44%20passing-2ea043" alt="Tests" /></a>
+<a href="#verification"><img src="https://img.shields.io/badge/tests-48%20passing-2ea043" alt="Tests" /></a>
 <a href="#verification"><img src="https://img.shields.io/badge/eval-recall%201.00%20%7C%20FPR%200.00-2ea043" alt="Eval" /></a>
 <a href="#licence"><img src="https://img.shields.io/badge/license-proprietary-lightgrey" alt="License" /></a>
 <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs welcome" /></a>
@@ -64,6 +64,8 @@ Banks integrate three ways:
 
 Mint and revoke keys (scoped: `scans:write`, `lookup:read`, `directory:read`, `certificates:read`) from the signed-in **developer keys** page at `/integrations`. The raw key is shown exactly once.
 
+Shield also ships as an **installable PWA**: the web manifest declares a share target (`/share`), so from your phone's share sheet you pick **Shield** and the pasted message arrives prefilled on the scan page (signing in first when needed). A **browser extension** under `extensions/browser/` adds a right-click *“Check selected text with Shield”* action and a popup that scans pasted messages using the same `X-Api-Key` integration keys.
+
 Shield is a privacy-minded scanning service for suspicious messages. It applies explainable rules and, when configured, asks the OpenAI API for a structured assessment of redacted text. A result is a signal to verify through an official channel; it is never proof that a message is safe.
 
 Repository: [github.com/opeblow/shield](https://github.com/opeblow/shield)
@@ -85,7 +87,7 @@ Add `OPENAI_API_KEY` and `OPENAI_MODEL` to the environment to enable the structu
 
 ## Services and deployment status
 
-`infra/docker-compose.yml` describes local PostgreSQL and Redis. To use PostgreSQL locally, set `POSTGRES_PASSWORD` and `DATABASE_URL` in `.env`, start Compose, then apply the migration in `infra/migrations/` (including `0004_auth.sql` for consumer accounts and sessions, and `0005_trust.sql` for blind-indexed identifier reports and integration keys) to the isolated development database. The API has PostgreSQL persistence and Redis rate-limit adapters, but neither has been runtime-verified in this environment; queues, object storage, and account onboarding remain incomplete. Consumer email/password authentication works without a database via a process-local store that is only suitable for development, and stores sessions in an `HttpOnly` cookie. This repository is an active implementation and is not launch-ready. Do not expose it to public traffic.
+`infra/docker-compose.yml` describes local PostgreSQL and Redis. To use PostgreSQL locally, set `POSTGRES_PASSWORD` and `DATABASE_URL` in `.env`, start Compose, then apply the migration in `infra/migrations/` (including `0004_auth.sql` for consumer accounts and sessions, `0005_trust.sql` for blind-indexed identifier reports and integration keys, and `0006_alert_waves.sql` for the fraud-wave ledger) to the isolated development database. The API has PostgreSQL persistence and Redis rate-limit adapters, but neither has been runtime-verified in this environment; queues, object storage, and account onboarding remain incomplete. Consumer email/password authentication works without a database via a process-local store that is only suitable for development, and stores sessions in an `HttpOnly` cookie. This repository is an active implementation and is not launch-ready. Do not expose it to public traffic.
 
 Production requires managed PostgreSQL/Redis/object storage, TLS termination, a KMS-backed keyring, OpenAI account configuration, rate limiting and auth backed by shared infrastructure, monitoring, backups, and privacy/security review. These external dependencies have not been provisioned and this repository is not launch-ready.
 
@@ -94,7 +96,11 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 - `POST /v1/scans` accepts JSON `{ "text": "...", "language": "en|pcm|yo|ha|ig" }` or combined `{ "inputs": [{ "type": "url" | "qr" | "phone" | "account" | ... , ... }] }`. `mode: "deep"` runs the fast pass first and returns `upgrade_url` for `GET /v1/scans/{id}/stream` (Server-Sent Events: `fast`, `deep`, `final`). Every scan response includes a `shield` block with reputation and official-channel context.
 - `POST /v1/assess` scores a transfer against a risk policy and returns an `action` (`allow|warn|review|delay|block`) plus a localized customer message.
 - `POST /v1/lookup` accepts an identifier in JSON (not a URL) and returns only public reputation aggregates when a configured database has data.
-- `GET /v1/usage` reports tenant metering; `POST/GET/DELETE /v1/webhooks` manage signed subscriptions (HMAC-SHA256, replay protection, retry/backoff); `POST /v1/voice/speak` returns warning audio in a Tier 1 language.
+- `POST /v1/link-preview` fetches a public URL through the SSRF-safe fetcher and returns status, size, HTML title/meta description, and URL scam signals — it never executes page scripts or loads subresources.
+- `POST /v1/batch/scan` scans 1–25 messages in one call (anonymous or `X-Api-Key` with `scans:write`) and returns each result with its `shield` context.
+- `GET /v1/usage` reports tenant metering; `POST/GET/DELETE /v1/webhooks` manage signed subscriptions (HMAC-SHA256, replay protection, retry/backoff); `POST /v1/voice/speak` returns warning audio in a Tier 1 language and accepts a `provider` field (simulated or `openai` when configured); `GET /v1/voice/providers` lists the available synthesis backends.
+- Fraud-wave alerts: moderators verifying several reports for the same identifier inside 30 minutes trigger a wave that is logged, dispatched as a `fraud_wave.detected` webhook event, and readable at `GET /v1/alerts/waves` (session required, 48-hour horizon).
+- `GET /v1/ops/readiness` (session required) audits persistence, rate limiting, auth, speech, certificates, blind-index pepper, and TLS posture, returning `ready|degraded` plus recommendations.
 - Community reputation lives under `/v1/reputation/`: `POST /v1/reputation/reports` submits an identifier for moderation, `POST /v1/reputation/lookup` reads blind-indexed aggregates, and `POST /v1/reputation/reports/{id}/decide` (moderator bearer key) verifies or rejects a pending report. Only verified reports weight verdicts; pending reports surface only as signals.
 - Official-channel checks: `POST /v1/integrations/verify-channel` matches a phone or URL against the maintained bank/telco directory (`apps/api/src/directory.ts`).
 - Check cards: `POST /v1/certificates` issues an HMAC-sealed certificate (7-day TTL); `GET /v1/certificates/{token}` and `GET /v1/integrations/certificates/{token}` verify it, and `/c/{token}` renders the shareable card.
@@ -122,13 +128,15 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 │   │       ├── env.ts
 │   │       ├── ingestion.ts
 │   │       ├── integration.ts
-│   │       ├── jobs.ts
-│   │       ├── provider.ts
-│   │       ├── rate-limit.ts
-│   │       ├── repository.ts
-│   │       ├── reputation.ts
-│   │       ├── server.ts
-│   │       └── validation.ts
+│       │       ├── jobs.ts
+│       │       ├── preview.ts
+│       │       ├── provider.ts
+│       │       ├── rate-limit.ts
+│       │       ├── repository.ts
+│       │       ├── reputation.ts
+│       │       ├── server.ts
+│       │       ├── validation.ts
+│       │       └── waves.ts
 │   └── web/
 │       └── public/
 │           ├── data/
@@ -148,6 +156,8 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 │           ├── qr.js
 │           ├── recovery.html
 │           ├── recovery.js
+│           ├── share.html
+│           ├── share.js
 │           ├── snippet.js
 │           ├── styles.css
 │           └── sw.js
@@ -162,6 +172,7 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 │   │   └── KEY_ROTATION.md
 │   ├── screenshots/
 │   │   ├── shield-desktop.png
+│   │   ├── shield-docs.png
 │   │   └── shield-mobile.png
 │   ├── AI_DATA_HANDLING.md
 │   ├── DEGRADED_MATRIX.md
@@ -170,13 +181,22 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 ├── eval/
 │   ├── cases.ts
 │   └── run.ts
+├── extensions/
+│   └── browser/
+│       ├── background.js
+│       ├── icon-128.png
+│       ├── icon-48.png
+│       ├── manifest.json
+│       ├── popup.html
+│       └── popup.js
 ├── infra/
 │   ├── migrations/
 │   │   ├── 0001_foundation.sql
 │   │   ├── 0002_platform.sql
 │   │   ├── 0003_knowledge.sql
 │   │   ├── 0004_auth.sql
-│   │   └── 0005_trust.sql
+│   │   ├── 0005_trust.sql
+│   │   └── 0006_alert_waves.sql
 │   ├── docker-compose.yml
 │   └── Dockerfile
 ├── packages/
@@ -212,6 +232,7 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 ├── scripts/
 │   ├── capture-screenshots.mjs
 │   ├── create-tenant-key.ts
+│   ├── make-icons.ps1
 │   └── seed.ts
 ├── tests/
 │   ├── load/
@@ -231,13 +252,14 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 └── tsconfig.json
 ```
 
-- `apps/api/`: Node HTTP service, validation, PostgreSQL repository, scan jobs, rate limiting, email/password login, the OpenAI provider, the official-channel directory, blind-indexed reputation store, integration key store, and HMAC-sealed check-card certificates.
-- `apps/web/public/`: installable web shell (landing → auth → guarded scanner), client-side QR decoder, recovery page, the embeddable bank snippet, the API reference at `/docs`, and the integration-key dashboard at `/integrations`.
+- `apps/api/`: Node HTTP service, validation, PostgreSQL repository, scan jobs, rate limiting, email/password login, the OpenAI provider, the official-channel directory, blind-indexed reputation store, integration key store, fraud-wave detector, SSRF-safe link preview, and HMAC-sealed check-card certificates.
+- `apps/web/public/`: installable web shell (landing → auth → guarded scanner), client-side QR decoder, recovery page, the embeddable bank snippet, the API reference at `/docs`, the integration-key dashboard at `/integrations`, and the share-target page at `/share` that feeds copied messages into the scanner.
 - `packages/risk-engine/`: normalization, entity extraction, rules, fusion, localization, policy, SSRF-safe URL analysis, combined scans, and self-authored knowledge.
-- `packages/channels/`: WhatsApp, SMS, USSD, and IVR adapters and local simulators.
+- `packages/channels/`: WhatsApp, SMS, USSD, and IVR adapters and local simulators; pluggable TTS via `SpeechProviderRegistry`.
 - `packages/sdk/`: dependency-free TypeScript API client.
 - `packages/shared/`: crypto, redaction, safe logging, identifier normalization, webhook signing, and on-device history.
-- `infra/`: Dockerfile, local compose, and numbered SQL migrations (foundation, platform, knowledge, auth, trust). Seed shared reference data with `npm run seed` (requires `DATABASE_URL`).
+- `extensions/browser/`: a Manifest V3 extension with a selection context menu and a scan popup that calls your Shield deployment with an integration key.
+- `infra/`: Dockerfile, local compose, and numbered SQL migrations (foundation, platform, knowledge, auth, trust, fraud-wave alerts). Seed shared reference data with `npm run seed` (requires `DATABASE_URL`).
 - `config/brand.ts`: brand configuration.
 - `docs/`: OpenAPI contract, threat model, degraded-dependency matrix, AI data handling, runbooks, and legal drafts.
 - `eval/`: self-authored fixtures and a metric runner; figures are a pipeline check, not representative efficacy evidence.
@@ -263,7 +285,7 @@ npm test
 npm run eval
 ```
 
-On the current tree these report a clean typecheck and lint, 44 passing tests,
+On the current tree these report a clean typecheck and lint, 48 passing tests,
 and 450 self-authored eval cases with recall 1.00 and false-positive rate 0.00.
 The eval figures are a pipeline check, not representative efficacy evidence.
 
