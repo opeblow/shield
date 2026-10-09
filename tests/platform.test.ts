@@ -189,12 +189,16 @@ test("in-memory auth store handles sign-up, session lookup, and sign-out", async
 
 test("billing estimates use published rates and ignore unknown meters", () => {
   assert.deepEqual(calculateUsageEstimate([{ metric: "scan", quantity: 3 }, { metric: "assess", quantity: 2 }, { metric: "unknown", quantity: 100 }]), {
-    currency: "USD", period: "trailing_30_days", status: "estimate",
+    currency: "USD", period: "trailing_30_days", status: "incomplete_estimate",
     lines: [
       { metric: "scan", quantity: 3, unit: "scan", unit_price_minor: 1, amount_minor: 3 },
       { metric: "assess", quantity: 2, unit: "assessment", unit_price_minor: 2, amount_minor: 4 }
-    ], total_minor: 7
+    ], unpriced_metrics: ["unknown"], total_minor: null
   });
+  const incomplete = calculateUsageEstimate([{ metric: "deep_scan", quantity: 1 }, { metric: "scan", quantity: Number.MAX_SAFE_INTEGER }, { metric: "scan", quantity: Number.MAX_SAFE_INTEGER }]);
+  assert.equal(incomplete.status, "incomplete_estimate");
+  assert.equal(incomplete.total_minor, null);
+  assert.deepEqual(incomplete.unpriced_metrics, ["deep_scan"]);
 });
 
 test("official-channel directory normalises phones and domains and finds banks and telcos", () => {
