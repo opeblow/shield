@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Shield — scan suspicious messages",
+  "version": "1.0.0",
+  "description": "Check a suspected-scam message or link against the Shield fraud database without leaving the page.",
+  "permissions": ["contextMenus", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Check a message with Shield" },
+  "icons": { "48": "icon-48.png", "128": "icon-128.png" }
+}
