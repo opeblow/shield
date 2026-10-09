@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const edge = process.env.EDGE_PATH ?? "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+const base = process.env.SHIELD_BASE_URL ?? "http://localhost:3001";
 const port = 9337;
 const profile = mkdtempSync(join(tmpdir(), "shield-edge-"));
 const browser = spawn(edge, [
@@ -51,10 +52,10 @@ async function waitForDebugPort() {
   throw new Error("Edge remote debugging endpoint did not start");
 }
 
-async function capture(devtools, width, height, mobile, destination) {
+async function capture(devtools, width, height, mobile, pathname, destination) {
   await devtools.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
   await devtools.send("Page.enable");
-  await devtools.send("Page.navigate", { url: "http://localhost:3001/" });
+  await devtools.send("Page.navigate", { url: `${base}${pathname}` });
   let ready = false;
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -79,8 +80,9 @@ try {
     socket.addEventListener("error", reject, { once: true });
   });
   const devtools = new DevTools(socket);
-  await capture(devtools, 390, 844, true, "docs/screenshots/shield-mobile.png");
-  await capture(devtools, 1440, 1100, false, "docs/screenshots/shield-desktop.png");
+  await capture(devtools, 390, 844, true, "/", "docs/screenshots/shield-mobile.png");
+  await capture(devtools, 1440, 1100, false, "/", "docs/screenshots/shield-desktop.png");
+  await capture(devtools, 1440, 1100, false, "/docs", "docs/screenshots/shield-docs.png");
   socket.close();
 } finally {
   browser.kill();
