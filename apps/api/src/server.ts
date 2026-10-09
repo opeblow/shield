@@ -12,11 +12,11 @@ import type { Language, ScanResult } from "../../../packages/risk-engine/src/typ
 import { logEvent } from "../../../packages/shared/src/safe-log.js";
 import { generateOpaqueToken, hashSecret, keyringFromEnv, verifySecret } from "../../../packages/shared/src/crypto.js";
 import { deliverWebhook } from "../../../packages/shared/src/webhooks.js";
-import { SimulatedSpeechProvider, OpenAiSpeechProvider, type SpeechProvider } from "../../../packages/channels/src/voice.js";
+import { SimulatedSpeechProvider, OpenAiSpeechProvider, SpeechProviderRegistry } from "../../../packages/channels/src/voice.js";
 import { ScanRepository } from "./repository.js";
 import { ScanJobRegistry } from "./jobs.js";
 import { redactSensitive } from "../../../packages/shared/src/redaction.js";
-import { assessRequestSchema, authLoginSchema, authRegisterSchema, certificateRequestSchema, communityReportSchema, decideReportSchema, integrationKeySchema, lookupRequestSchema, moderateReportSchema, reputationReportSchema, scanRequestSchema, verifyChannelSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "./validation.js";
+import { assessRequestSchema, authLoginSchema, authRegisterSchema, batchScanRequestSchema, certificateRequestSchema, communityReportSchema, decideReportSchema, integrationKeySchema, linkPreviewRequestSchema, lookupRequestSchema, moderateReportSchema, reputationReportSchema, scanRequestSchema, verifyChannelSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "./validation.js";
 import { MemoryAuthStore, PgAuthStore, hashPassword, normalizeEmail, verifyPassword, type AuthStore } from "./auth.js";
 import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./rate-limit.js";
 import { findOfficialChannel } from "./directory.js";
@@ -24,6 +24,8 @@ import { MemoryReputationStore, PgReputationStore, type ReputationStore } from "
 import { MemoryIntegrationKeyStore, PgIntegrationKeyStore, type IntegrationKeyStore, type IntegrationScope } from "./integration.js";
 import { issueCertificate, verifyCertificate, certificateCardHtml, CERTIFICATE_TTL_SECONDS } from "./certificates.js";
 import { buildShieldContext, lookupIntelligence } from "./context.js";
+import { previewUrl } from "./preview.js";
+import { WaveWatch } from "./waves.js";
 
 const env = loadEnv();
 const provider = new OpenAiProvider(env.openAiKey, env.openAiModel);
@@ -45,6 +47,9 @@ const staticFiles: Record<string, { file: string; type: string }> = {
   "/auth": { file: "auth.html", type: "text/html; charset=utf-8" },
   "/auth.html": { file: "auth.html", type: "text/html; charset=utf-8" },
   "/auth.js": { file: "auth.js", type: "text/javascript; charset=utf-8" },
+  "/share": { file: "share.html", type: "text/html; charset=utf-8" },
+  "/share.html": { file: "share.html", type: "text/html; charset=utf-8" },
+  "/share.js": { file: "share.js", type: "text/javascript; charset=utf-8" },
   "/recovery": { file: "recovery.html", type: "text/html; charset=utf-8" },
   "/recovery.html": { file: "recovery.html", type: "text/html; charset=utf-8" },
   "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -68,10 +73,19 @@ const rateLimiter: RateLimiter = env.redisUrl && env.apiKeyPepper
   ? new RedisRateLimiter(env.redisUrl, Buffer.from(env.apiKeyPepper))
   : new MemoryRateLimiter();
 const scanJobs = new ScanJobRegistry();
-const speechProvider: SpeechProvider = env.openAiKey && env.openAiTranscribeModel && env.openAiTtsModel
-  ? new OpenAiSpeechProvider(env.openAiKey, env.openAiTranscribeModel, env.openAiTtsModel)
-  : new SimulatedSpeechProvider();
-const speechConfigured = Boolean(env.openAiKey && env.openAiTranscribeModel && env.openAiTtsModel);
+const speechRegistry = new SpeechProviderRegistry().register("simulated", new SimulatedSpeechProvider());
+if (env.openAiKey && env.openAiTranscribeModel && env.openAiTtsModel) {
+  speechRegistry.register("openai", new OpenAiSpeechProvider(env.openAiKey, env.openAiTranscribeModel, env.openAiTtsModel));
+}
+const speechConfigured = speechRegistry.names().length > 1;
+const waveWatch = new WaveWatch();
+const waveTicker = setInterval(() => {
+  for (const wave of waveWatch.tick()) {
+    logEvent("fraud_wave_resolved", { waveId: wave.id, kind: wave.kind, count: wave.count });
+    void dispatchWebhookEvent(null, "fraud_wave.detected", wave);
+  }
+}, 60_000);
+waveTicker.unref();
 
 function problem(res: ServerResponse, status: number, title: string, detail: string): void {
   res.writeHead(status, { "content-type": "application/problem+json; charset=utf-8", "cache-control": "no-store" });
@@ -186,6 +200,13 @@ const server = createServer(async (req, res) => {
     res.end(JSON.stringify({ user: { email: session.email } }));
     return;
   }
+  if (req.method === "GET" && path === "/v1/session") {
+    const session = await currentSession(req);
+    if (!session) { problem(res, 401, "Unauthorized", "Not signed in."); return; }
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    res.end(JSON.stringify({ user: { email: session.email } }));
+    return;
+  }
   if (req.method === "POST" && path === "/v1/reputation/reports") {
     try {
       if (!await requireSession(req, res)) return;
@@ -239,6 +260,16 @@ const server = createServer(async (req, res) => {
       if (!validated.success) { problem(res, 400, "Invalid moderation action", "Choose verify or reject."); return; }
       const changed = await reputationStore.decide(decideReportMatch[1]!, validated.data.action);
       if (!changed) { problem(res, 409, "Report is no longer pending", "Only pending reports can be moderated."); return; }
+      if (validated.data.action === "verify") {
+        const report = await reputationStore.get(decideReportMatch[1]!);
+        if (report) {
+          const wave = waveWatch.recordVerified(report.kind, report.valueKey, report.valueKey);
+          if (wave) {
+            logEvent("fraud_wave_detected", { waveId: wave.id, kind: wave.kind, count: wave.count });
+            void dispatchWebhookEvent(null, "fraud_wave.detected", wave);
+          }
+        }
+      }
       res.writeHead(204, { "cache-control": "no-store" });
       res.end();
     } catch (error) {
@@ -592,19 +623,26 @@ const server = createServer(async (req, res) => {
       try { rate = await rateLimiter.consume(`${address}:speak`, 30, 60_000); }
       catch { problem(res, 503, "Rate limiting unavailable", "Voice output is temporarily unavailable."); return; }
       if (!rate.allowed) { problem(res, 429, "Rate limit exceeded", `Please retry in ${Math.ceil(rate.retryAfterMs / 1000)} seconds.`); return; }
-      if (!speechConfigured && env.nodeEnv === "production") { problem(res, 503, "Voice output unavailable", "A configured speech provider is required in production."); return; }
       if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
       const validated = voiceSpeakRequestSchema.safeParse(await readJson(req));
       if (!validated.success) { problem(res, 400, "Invalid request", "Provide text and a Tier 1 language."); return; }
-      const speech = await speechProvider.speak(validated.data.text, validated.data.language);
+      const resolved = speechRegistry.resolve(validated.data.provider ?? "auto");
+      if (!resolved) { problem(res, 400, "Unknown speech provider", `Choose one of: ${speechRegistry.names().join(", ")}.`); return; }
+      if (!speechConfigured && resolved.name === "openai") { problem(res, 503, "Voice output unavailable", "A configured speech provider is required."); return; }
+      const speech = await resolved.provider.speak(validated.data.text, validated.data.language);
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      res.end(JSON.stringify({ language: validated.data.language, mime_type: speech.mimeType, audio_base64: speech.audio.toString("base64"), provider: speechConfigured ? "openai" : "simulated" }));
+      res.end(JSON.stringify({ language: validated.data.language, mime_type: speech.mimeType, audio_base64: speech.audio.toString("base64"), provider: resolved.name }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "request_failed";
       if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
       if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
       problem(res, 503, "Voice output unavailable", "Speech could not be generated safely.");
     }
+    return;
+  }
+  if (req.method === "GET" && path === "/v1/voice/providers") {
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    res.end(JSON.stringify({ providers: speechRegistry.names(), default: speechRegistry.names()[0] ?? "simulated" }));
     return;
   }
   const scanStream = /^\/v1\/scans\/([0-9a-f-]{36})\/stream$/i.exec(path);
@@ -693,6 +731,90 @@ const server = createServer(async (req, res) => {
       if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
       problem(res, 400, "Scan failed", message === "Text must contain 2 to 20,000 characters" ? message : "The scan could not be completed.");
     }
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/link-preview") {
+    try {
+      const address = req.socket.remoteAddress ?? "unknown";
+      let rate;
+      try { rate = await rateLimiter.consume(`${address}:preview`, 10, 60_000); }
+      catch { problem(res, 503, "Rate limiting unavailable", "Link previews are temporarily unavailable."); return; }
+      if (!rate.allowed) { problem(res, 429, "Rate limit exceeded", `Please retry in ${Math.ceil(rate.retryAfterMs / 1000)} seconds.`); return; }
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      const validated = linkPreviewRequestSchema.safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid request", "Provide an http(s) URL."); return; }
+      const preview = await previewUrl(validated.data.url);
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify(preview));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "request_failed";
+      if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
+      if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
+      if (message.includes("Public host expected")) { problem(res, 422, "Unsafe URL", "Only public http(s) URLs can be previewed."); return; }
+      problem(res, 400, "Preview failed", "The link could not be previewed safely. Confirm the URL is reachable.");
+    }
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/batch/scan") {
+    try {
+      const address = req.socket.remoteAddress ?? "unknown";
+      let rate;
+      try { rate = await rateLimiter.consume(`${address}:batch`, 10, 60_000); }
+      catch { problem(res, 503, "Rate limiting unavailable", "Batch scanning is temporarily unavailable."); return; }
+      if (!rate.allowed) { problem(res, 429, "Rate limit exceeded", `Please retry in ${Math.ceil(rate.retryAfterMs / 1000)} seconds.`); return; }
+      const integration = await resolveIntegration(req, "scans:write");
+      if (integration.status === "error" && req.headers["x-api-key"]) { problem(res, 401, "Unauthorized", "The X-Api-Key is invalid or lacks scans:write."); return; }
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      const validated = batchScanRequestSchema.safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid request", "Send 1 to 25 items, each with text (and an optional language) between 2 and 20,000 characters."); return; }
+      const results: unknown[] = [];
+      for (const item of validated.data.items) {
+        const scanId = randomUUID();
+        const result = await scanText(item.text, {
+          scanId,
+          ...(item.language ? { language: item.language as Language } : {}),
+          lookup: async (entities) => lookupIntelligence(entities, reputationStore)
+        });
+        const shield = await buildShieldContext({ text: item.text }, reputationStore);
+        results.push({ ...result, shield });
+      }
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ count: results.length, results }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "request_failed";
+      if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
+      if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
+      problem(res, 400, "Batch failed", "The batch could not be processed. Ensure each item is between 2 and 20,000 characters.");
+    }
+    return;
+  }
+  if (req.method === "GET" && path === "/v1/alerts/waves") {
+    if (!await requireSession(req, res)) return;
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    res.end(JSON.stringify({ waves: waveWatch.recent() }));
+    return;
+  }
+  if (req.method === "GET" && path === "/v1/ops/readiness") {
+    if (!await requireSession(req, res)) return;
+    const checks: { name: string; ok: boolean; detail: string }[] = [];
+    const database = repository ? await repository.ready() : false;
+    if (database) { checks.push({ name: "persistence", ok: true, detail: "postgres" }); }
+    else if (env.nodeEnv === "production") { checks.push({ name: "persistence", ok: false, detail: "unavailable — scans will fail in production" }); }
+    else { checks.push({ name: "persistence", ok: true, detail: "process_local (unavailable in production)" }); }
+    if (rateLimiter instanceof RedisRateLimiter) { checks.push({ name: "rate_limiter", ok: true, detail: "redis" }); }
+    else { checks.push({ name: "rate_limiter", ok: env.nodeEnv !== "production", detail: "process_local" }); }
+    checks.push({ name: "auth", ok: true, detail: "registration and session authentication" });
+    checks.push({ name: "speech", ok: speechConfigured || env.nodeEnv !== "production", detail: speechConfigured ? `${speechRegistry.names().length} providers` : "simulated only" });
+    checks.push({ name: "certificates", ok: authSecret.length >= 32, detail: `shares sealed for ${CERTIFICATE_TTL_SECONDS}s` });
+    checks.push({ name: "blind_pepper", ok: Boolean(env.blindPepper), detail: env.blindPepper ? "identifier hashing active" : "missing" });
+    checks.push({ name: "tls_termination", ok: true, detail: env.nodeEnv === "production" ? "terminate TLS at the load balancer" : "development" });
+    checks.push({ name: "build", ok: true, detail: `process.version ${process.version}` });
+    const failed = checks.filter((check) => !check.ok);
+    const recommendations: string[] = [];
+    for (const check of failed) recommendations.push(`Fix ${check.name}: ${check.detail}.`);
+    if (env.nodeEnv === "production" && !speechConfigured) recommendations.push("Configure OPENAI_API_KEY, OPENAI_TRANSCRIBE_MODEL, and OPENAI_TTS_MODEL to enable provider-based voice, or keep simulated TTS in development only.");
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    res.end(JSON.stringify({ status: failed.length === 0 ? "ready" : "degraded", checked_at: new Date().toISOString(), checks, recommendations }));
     return;
   }
   problem(res, 404, "Not found", "The requested route does not exist.");
