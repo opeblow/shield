@@ -13,6 +13,7 @@ servers:
   - url: http://localhost:3001
     description: Local development
 tags:
+  - name: Auth
   - name: Scans
   - name: Assess
   - name: Lookup
@@ -39,6 +40,75 @@ paths:
       responses:
         "200": { description: Ready to serve traffic, content: { application/json: { schema: { $ref: "#/components/schemas/Ready" } } } }
         "503": { description: A dependency is unavailable }
+  /v1/auth/register:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Create an email/password account
+      description: Passwords are stored as scrypt hashes. A successful sign-up sets an HttpOnly session cookie. Returns 409 when the email is already registered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, maxLength: 200 }
+      responses:
+        "201":
+          description: Account created; session cookie set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthUser" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: Email already registered }
+  /v1/auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Sign in to an existing account
+      description: Verifies the password and sets a fresh session cookie. Returns 401 for unknown email or wrong password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: Signed in; session cookie set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthUser" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { description: Incorrect email or password }
+  /v1/auth/me:
+    get:
+      tags: [Auth]
+      security:
+        - cookieAuth: []
+      summary: Return the signed-in account
+      responses:
+        "200":
+          description: Current account
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/auth/logout:
+    post:
+      tags: [Auth]
+      security:
+        - cookieAuth: []
+      summary: Revoke the current session and clear the cookie
+      responses:
+        "204": { description: Session revoked }
   /v1/scans:
     post:
       tags: [Scans]
@@ -225,6 +295,7 @@ paths:
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, description: Tenant API key }
+    cookieAuth: { type: apiKey, in: cookie, name: shield_session, description: HttpOnly session cookie set by /v1/auth/register and /v1/auth/login }
   responses:
     BadRequest:
       description: Invalid request
@@ -242,6 +313,13 @@ components:
       description: A required dependency is unavailable
   schemas:
     Language: { type: string, enum: [en, pcm, yo, ha, ig] }
+    AuthUser:
+      type: object
+      properties:
+        user:
+          type: object
+          properties:
+            email: { type: string, format: email }
     Health: { type: object, properties: { status: { type: string } } }
     Ready:
       type: object
@@ -281,7 +359,7 @@ components:
       required: [scan_id, verdict, risk_score, confidence, input_types]
       properties:
         scan_id: { type: string, format: uuid }
-        verdict: { type: string, enum: [safe, suspicious, scam] }
+        verdict: { type: string, enum: [safe, caution, likely_scam, scam] }
         risk_score: { type: integer, minimum: 0, maximum: 100 }
         confidence: { type: number }
         scam_types: { type: array, items: { type: string } }
