@@ -14,9 +14,13 @@
 </p>
 </div>
 
+### Landing page
+
 <p align="center">
 <a href="docs/screenshots/shield-landing.png"><img src="docs/screenshots/shield-landing.png" alt="The Shield landing page" width="840" /></a>
 </p>
+
+The **landing page** is the store-front: it introduces Shield, sets expectations that a scan is a signal and never proof, and walks through a simple pre-scan flow — paste what feels wrong, see what to check, then verify through your bank's official channel. From here, **Get started** creates an account and **Sign in** returns existing users.
 
 ### Sign in
 
@@ -40,7 +44,7 @@ New here? The **Get started** (Create account) page sets up your Shield account.
 <a href="docs/screenshots/shield-scan.png"><img src="docs/screenshots/shield-scan.png" alt="The Shield scan page" width="840" /></a>
 </p>
 
-Once signed in you land on the **Scan** page. Paste the suspicious message, link, or payment request and press **Check this message**. Shield redacts common private details, surfaces pressure tactics and secret-code requests, and returns a plain-language verdict — a red **Likely scam** here. A result is a signal to verify through an official channel, never proof that a message is safe.
+Once signed in you land on the **Scan** page. Paste the suspicious message, link, or payment request and press **Check this message**. Shield redacts common private details, surfaces pressure tactics and secret-code requests, and returns a plain-language verdict — a red **Likely scam** here. A result is a signal to verify through an official channel, never proof that a message is safe. Results can be read in your language too: the reply selector offers **English, Nigerian Pidgin, Yorùbá, Hausa, and Igbo**.
 
 Shield is a privacy-minded scanning service for suspicious messages. It applies explainable rules and, when configured, asks the OpenAI API for a structured assessment of redacted text. A result is a signal to verify through an official channel; it is never proof that a message is safe.
 
