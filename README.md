@@ -98,6 +98,7 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 - `POST /v1/lookup` accepts an identifier in JSON (not a URL) and returns only public reputation aggregates when a configured database has data.
 - `POST /v1/link-preview` fetches a public URL through the SSRF-safe fetcher and returns status, size, HTML title/meta description, and URL scam signals — it never executes page scripts or loads subresources.
 - `POST /v1/batch/scan` scans 1–25 messages in one call (anonymous or `X-Api-Key` with `scans:write`) and returns each result with its `shield` context.
+- `POST /v1/media/scan` accepts a raw image/document/audio upload, sniffs its magic bytes, rejects SVG/executables and mismatched declared types, and enforces per-kind size limits (8 MiB request ceiling). It validates the artifact without rendering it; the accompanying text is scanned via `/v1/scans`.
 - `GET /v1/usage` reports tenant metering; `POST/GET/DELETE /v1/webhooks` manage signed subscriptions (HMAC-SHA256, replay protection, retry/backoff); `POST /v1/voice/speak` returns warning audio in a Tier 1 language and accepts a `provider` field (simulated or `openai` when configured); `GET /v1/voice/providers` lists the available synthesis backends.
 - Fraud-wave alerts: moderators verifying several reports for the same identifier inside 30 minutes trigger a wave that is logged, dispatched as a `fraud_wave.detected` webhook event, and readable at `GET /v1/alerts/waves` (session required, 48-hour horizon).
 - `GET /v1/ops/readiness` (session required) audits persistence, rate limiting, auth, speech, certificates, blind-index pepper, and TLS posture, returning `ready|degraded` plus recommendations.
@@ -232,6 +233,7 @@ Production requires managed PostgreSQL/Redis/object storage, TLS termination, a 
 ├── scripts/
 │   ├── capture-screenshots.mjs
 │   ├── create-tenant-key.ts
+│   ├── load-test.mjs
 │   ├── make-icons.ps1
 │   └── seed.ts
 ├── tests/
