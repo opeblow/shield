@@ -62,6 +62,18 @@ export const communityReportSchema = z.object({
 
 export const moderateReportSchema = z.object({ action: z.enum(["verify", "reject"]) }).strict();
 
+const emailSchema = z.string().trim().toLowerCase().min(3).max(254).regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Enter a valid email address");
+
+export const authRegisterSchema = z.object({
+  email: emailSchema,
+  password: z.string().min(8, "Password must be at least 8 characters.").max(200)
+}).strict();
+
+export const authLoginSchema = z.object({
+  email: emailSchema,
+  password: z.string().min(1).max(200)
+}).strict();
+
 export type ScanRequest = z.infer<typeof scanRequestSchema>;
 export type AssessRequest = z.infer<typeof assessRequestSchema>;
 export type WebhookRequest = z.infer<typeof webhookRequestSchema>;
