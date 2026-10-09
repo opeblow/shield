@@ -8,7 +8,7 @@ import type { Language, ScanResult, Verdict } from "./types.js";
 
 export type Intelligence = { reports: number; verified: boolean; firstSeen: string | null; lastSeen: string | null };
 export type LlmAssessment = { scam: boolean; scam_types: string[]; confidence: number; reasons: string[] };
-export type ScanOptions = { language?: Language; lookup?: (entities: ReturnType<typeof extractEntities>) => Promise<Intelligence>; assess?: (text: string, signals: Record<string, boolean>) => Promise<LlmAssessment>; scanId?: string };
+export type ScanOptions = { language?: Language; lookup?: (entities: ReturnType<typeof extractEntities>) => Promise<Intelligence | undefined>; assess?: (text: string, signals: Record<string, boolean>) => Promise<LlmAssessment>; scanId?: string };
 
 export async function scanText(rawText: string, options: ScanOptions = {}): Promise<ScanResult> {
   const started = performance.now();
