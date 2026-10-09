@@ -679,6 +679,38 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuthUser" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/media/scan:
+    post:
+      tags: [Scans]
+      security: []
+      summary: Validates an uploaded image, document, or audio artifact
+      description: >
+        Accepts raw bytes with the artifact's media type as Content-Type. Sniffs
+        magic bytes to confirm the true type, rejects SVG/executables and
+        mismatched declared types, and enforces per-kind size limits. Never
+        executes or renders the artifact.
+      requestBody:
+        required: true
+        content:
+          image/png: { schema: { type: string, format: binary } }
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/gif: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+          image/bmp: { schema: { type: string, format: binary } }
+          application/pdf: { schema: { type: string, format: binary } }
+          audio/ogg: { schema: { type: string, format: binary } }
+          audio/mpeg: { schema: { type: string, format: binary } }
+          audio/wav: { schema: { type: string, format: binary } }
+          audio/mp4: { schema: { type: string, format: binary } }
+      responses:
+        "200":
+          description: Artifact accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaScanResult" }
+        "413": { description: Payload exceeds the 8 MiB upload ceiling }
+        "415": { description: Unsupported, mismatched, or executable content }
+        "429": { description: Rate limited }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, description: Tenant API key }
@@ -885,6 +917,17 @@ components:
               risk_score: { type: integer }
               reasons: { type: array, items: { type: string } }
               shield: { $ref: "#/components/schemas/Shield" }
+    MediaScanResult:
+      type: object
+      properties:
+        accepted: { type: boolean }
+        kind: { type: string, enum: [image, document, audio] }
+        bytes: { type: integer }
+        analysis:
+          type: object
+          properties:
+            scanned: { type: boolean }
+            note: { type: string }
     WaveAlert:
       type: object
       properties:
