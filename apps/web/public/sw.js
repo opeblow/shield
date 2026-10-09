@@ -1,5 +1,5 @@
-const CACHE = 'shield-shell-v5';
-const SHELL = ['/', '/styles.css', '/landing.js', '/auth.html', '/auth.js', '/app.html', '/app.js', '/qr.js', '/recovery.html', '/recovery.js', '/data/recovery.json', '/docs.html', '/docs.js', '/integrations.html', '/integrations.js', '/openapi.yaml', '/manifest.webmanifest', '/icon.svg'];
+const CACHE = 'shield-shell-v6';
+const SHELL = ['/', '/styles.css', '/landing.js', '/auth.html', '/auth.js', '/app.html', '/app.js', '/qr.js', '/recovery.html', '/recovery.js', '/data/recovery.json', '/docs.html', '/docs.js', '/integrations.html', '/integrations.js', '/openapi.yaml', '/manifest.webmanifest', '/icon.svg', '/share.html', '/share.js'];
 self.addEventListener('install', (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL))));
 self.addEventListener('activate', (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))));
 self.addEventListener('fetch', (event) => {
