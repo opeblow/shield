@@ -1,0 +1,99 @@
+<div align="center">
+<img src="apps/web/public/icon.svg" alt="Shield logo" width="112" height="112" />
+<h1>Shield</h1>
+<p><strong>Scan the message before you trust it.</strong></p>
+<p>
+<a href=".github/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-GitHub%20Actions-2088FF" alt="CI" /></a>
+<a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D22-3c873a" alt="Node" /></a>
+<a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/typescript-5.x-3178c6" alt="TypeScript" /></a>
+<a href="#verification"><img src="https://img.shields.io/badge/checks-typecheck%20%7C%20lint%20%7C%20test%20%7C%20eval-2ea043" alt="Checks" /></a>
+<a href="#verification"><img src="https://img.shields.io/badge/tests-34%20passing-2ea043" alt="Tests" /></a>
+<a href="#verification"><img src="https://img.shields.io/badge/eval-recall%201.00%20%7C%20FPR%200.00-2ea043" alt="Eval" /></a>
+<a href="#licence"><img src="https://img.shields.io/badge/license-proprietary-lightgrey" alt="License" /></a>
+<a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs welcome" /></a>
+</p>
+</div>
+
+Shield is a privacy-minded scanning service for suspicious messages. It applies explainable rules and, when configured, asks the OpenAI API for a structured assessment of redacted text. A result is a signal to verify through an official channel; it is never proof that a message is safe.
+
+## Local setup
+
+Requirements: Node.js 22 or newer and npm. No third-party account is needed to run the local rules-based scanner.
+
+1. Copy `.env.example` to `.env` (PowerShell: `Copy-Item .env.example .env`). Leave external credentials blank for rules-only use.
+2. Install dependencies: `npm install`.
+3. Start the service and PWA: `npm run dev`.
+4. Open `http://localhost:3001` and scan a text message. Health checks are at `/healthz` and `/readyz`.
+5. Run checks: `npm run typecheck`, `npm run lint`, `npm test`, and `npm run eval`.
+
+For visual QA, start the app and run `npm run screenshots` in an environment with Microsoft Edge installed; it captures exact 390px and 1440px viewports into `docs/screenshots/`.
+
+Add `OPENAI_API_KEY` and `OPENAI_MODEL` to the environment to enable the structured text assessment. Never use real customer data in development. With `REDIS_URL` blank, development uses a process-local rate limiter; production refuses to start without PostgreSQL and Redis. Without `DATABASE_URL`, scans are not persisted. Neither local mode is suitable for production traffic.
+
+## Services and deployment status
+
+`infra/docker-compose.yml` describes local PostgreSQL and Redis. To use PostgreSQL locally, set `POSTGRES_PASSWORD` and `DATABASE_URL` in `.env`, start Compose, then apply the migration in `infra/migrations/` to the isolated development database. The API has PostgreSQL persistence and Redis rate-limit adapters, but neither has been runtime-verified in this environment; queues, object storage, account onboarding, and self-service authentication are incomplete. This repository is an active implementation and is not launch-ready. Do not expose it to public traffic.
+
+Production requires managed PostgreSQL/Redis/object storage, TLS termination, a KMS-backed keyring, OpenAI account configuration, rate limiting and auth backed by shared infrastructure, monitoring, backups, and privacy/security review. See [BLOCKERS.md](BLOCKERS.md) and [DECISIONS.md](DECISIONS.md).
+
+## Product interfaces
+
+- `POST /v1/scans` accepts JSON `{ "text": "...", "language": "en|pcm|yo|ha|ig" }` or combined `{ "inputs": [{ "type": "url" | "qr" | "phone" | "account" | ... , ... }] }`. `mode: "deep"` runs the fast pass first and returns `upgrade_url` for `GET /v1/scans/{id}/stream` (Server-Sent Events: `fast`, `deep`, `final`).
+- `POST /v1/assess` scores a transfer against a risk policy and returns an `action` (`allow|warn|review|delay|block`) plus a localized customer message.
+- `POST /v1/lookup` accepts an identifier in JSON (not a URL) and returns only public reputation aggregates when a configured database has data.
+- `GET /v1/usage` reports tenant metering; `POST/GET/DELETE /v1/webhooks` manage signed subscriptions (HMAC-SHA256, replay protection, retry/backoff); `POST /v1/voice/speak` returns warning audio in a Tier 1 language.
+- `GET /healthz` reports process health; `GET /readyz` reports configured scan mode. The full contract is in `docs/openapi.yaml`.
+- The TypeScript client is `packages/sdk/src/index.ts`; banks can embed `apps/web/public/snippet.js` on a transfer page to render the warning from `/v1/assess`.
+- `/recovery.html` provides first-hour account-safety steps and links to current official CBN guidance checked in the dated `data/recovery.json` file.
+- The scanner can decode a user-selected raster QR image locally in browsers that implement `BarcodeDetector`; decoded content is shown for review and submitted only when the user starts a scan. `apps/api/src/ingestion.ts` validates uploaded image/document/audio magic bytes, but full server-side media analysis is not yet wired to an endpoint. Warning audio is available via `POST /v1/voice/speak`.
+- WhatsApp, SMS, USSD, and IVR simulators are in `packages/channels/`; they scan locally and never send messages to real subscribers.
+
+## Repository guide
+
+- `apps/api/`: Node HTTP service and OpenAI provider adapter.
+- `apps/web/public/`: responsive installable web shell and scanner client.
+- `packages/risk-engine/`: normalization, entity extraction, rules, fusion, localization, policy, SSRF-safe URL fetch, combined scans, self-authored knowledge.
+- `packages/sdk/`: dependency-free TypeScript API client.
+- `packages/shared/`: cryptographic primitives, redaction, log scrubbing, webhook signing/replay.
+- `apps/api/src/ingestion.ts`: uploaded-artifact validation.
+- `infra/migrations/`: PostgreSQL schema, RLS policies and knowledge tables. Seed shared reference data with `npm run seed` (requires `DATABASE_URL`).
+- `docs/openapi.yaml`, `docs/runbooks/`, `docs/DEGRADED_MATRIX.md`: API contract and operations.
+- `tests/load/scan.js`: k6 load profile for the scan path.
+- `eval/`: self-authored fixtures and a metric runner; current results are a pipeline check, not a representative efficacy claim.
+- `PLAN.md`: milestone checklist and outstanding work.
+
+## Data handling
+
+Text is redacted in memory before a configured model call and is not persisted by the current scan path. PII redaction and local protection controls still need independent security validation. Never submit secrets or real identifiers to this development service.
+
+## Language quality
+
+English, Nigerian Pidgin, Yoruba, Hausa, and Igbo message catalogs and local rule examples are present. Their output has not been verified by native speakers. Do not present the translations as professionally reviewed. See `BLOCKERS.md` for review and production integration requirements.
+
+## Verification
+
+Run the full local gate before any change is considered done:
+
+```
+npm run typecheck
+npm run lint
+npm test
+npm run eval
+```
+
+On the current tree these report a clean typecheck and lint, 34 passing tests,
+and 450 self-authored eval cases with recall 1.00 and false-positive rate 0.00.
+The eval figures are a pipeline check, not representative efficacy evidence.
+
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+conventions, and the checks your change must pass, and follow
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Do not add emoji to the README,
+docs, or source. Report vulnerabilities privately per [SECURITY.md](SECURITY.md).
+
+## Licence
+
+This project is proprietary and not licensed for redistribution. All rights are
+reserved by the project owner. The icon and wordmark are project assets and may
+not be reused without permission.
