@@ -2,6 +2,10 @@
   "name": "shield-platform",
   "private": true,
   "version": "0.1.0",
+  "description": "Privacy-minded fraud scanning API and web app for suspicious messages.",
+  "repository": { "type": "git", "url": "git+https://github.com/opeblow/shield.git" },
+  "homepage": "https://github.com/opeblow/shield",
+  "bugs": { "url": "https://github.com/opeblow/shield/issues" },
   "type": "module",
   "engines": {
     "node": ">=22"
