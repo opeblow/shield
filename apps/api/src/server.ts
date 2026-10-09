@@ -25,7 +25,7 @@ import { MemoryIntegrationKeyStore, PgIntegrationKeyStore, type IntegrationKeySt
 import { issueCertificate, verifyCertificate, certificateCardHtml, CERTIFICATE_TTL_SECONDS } from "./certificates.js";
 import { buildShieldContext, lookupIntelligence } from "./context.js";
 import { previewUrl } from "./preview.js";
-import { WaveWatch } from "./waves.js";
+import { MemoryWaveStore, PgWaveStore, WaveWatch, type WaveStore } from "./waves.js";
 
 const env = loadEnv();
 const provider = new OpenAiProvider(env.openAiKey, env.openAiModel);
@@ -78,7 +78,8 @@ if (env.openAiKey && env.openAiTranscribeModel && env.openAiTtsModel) {
   speechRegistry.register("openai", new OpenAiSpeechProvider(env.openAiKey, env.openAiTranscribeModel, env.openAiTtsModel));
 }
 const speechConfigured = speechRegistry.names().length > 1;
-const waveWatch = new WaveWatch();
+const waveStore: WaveStore = env.databaseUrl ? new PgWaveStore(env.databaseUrl) : new MemoryWaveStore();
+const waveWatch = new WaveWatch({ store: waveStore });
 const waveTicker = setInterval(() => {
   for (const wave of waveWatch.tick()) {
     logEvent("fraud_wave_resolved", { waveId: wave.id, kind: wave.kind, count: wave.count });
@@ -790,8 +791,11 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === "GET" && path === "/v1/alerts/waves") {
     if (!await requireSession(req, res)) return;
+    let waves;
+    try { waves = await waveStore.recent(new Date(Date.now() - 48 * 60 * 60_000).toISOString()); }
+    catch { waves = waveWatch.recent(); }
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-    res.end(JSON.stringify({ waves: waveWatch.recent() }));
+    res.end(JSON.stringify({ waves }));
     return;
   }
   if (req.method === "GET" && path === "/v1/ops/readiness") {
@@ -928,8 +932,9 @@ async function start(): Promise<void> {
 void start().catch(() => { logEvent("server_start_failed"); process.exitCode = 1; });
 
 function shutdown(): void {
+  clearInterval(waveTicker);
   server.close(() => {
-    void Promise.all([repository?.close(), authStore.close(), rateLimiter.close(), reputationStore.close(), integrationKeyStore.close()]).finally(() => process.exit(0));
+    void Promise.all([repository?.close(), authStore.close(), rateLimiter.close(), reputationStore.close(), integrationKeyStore.close(), waveStore.close()]).finally(() => process.exit(0));
   });
 }
 process.on("SIGINT", shutdown);
