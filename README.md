@@ -3,7 +3,7 @@
 <h1>Shield</h1>
 <p><strong>Scan the message before you trust it.</strong></p>
 <p>
-<a href=".github/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-GitHub%20Actions-2088FF" alt="CI" /></a>
+<a href="https://github.com/opeblow/shield/actions/workflows/ci.yml"><img src="https://github.com/opeblow/shield/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D22-3c873a" alt="Node" /></a>
 <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/typescript-5.x-3178c6" alt="TypeScript" /></a>
 <a href="#verification"><img src="https://img.shields.io/badge/checks-typecheck%20%7C%20lint%20%7C%20test%20%7C%20eval-2ea043" alt="Checks" /></a>
@@ -16,15 +16,18 @@
 
 Shield is a privacy-minded scanning service for suspicious messages. It applies explainable rules and, when configured, asks the OpenAI API for a structured assessment of redacted text. A result is a signal to verify through an official channel; it is never proof that a message is safe.
 
+Repository: [github.com/opeblow/shield](https://github.com/opeblow/shield)
+
 ## Local setup
 
 Requirements: Node.js 22 or newer and npm. No third-party account is needed to run the local rules-based scanner.
 
-1. Copy `.env.example` to `.env` (PowerShell: `Copy-Item .env.example .env`). Leave external credentials blank for rules-only use.
-2. Install dependencies: `npm install`.
-3. Start the service and PWA: `npm run dev`.
-4. Open `http://localhost:3001` and scan a text message. Health checks are at `/healthz` and `/readyz`.
-5. Run checks: `npm run typecheck`, `npm run lint`, `npm test`, and `npm run eval`.
+1. Clone the repository: `git clone https://github.com/opeblow/shield.git` then `cd shield`.
+2. Copy `.env.example` to `.env` (PowerShell: `Copy-Item .env.example .env`). Leave external credentials blank for rules-only use.
+3. Install dependencies: `npm install`.
+4. Start the service and PWA: `npm run dev`.
+5. Open `http://localhost:3001` and scan a text message. Health checks are at `/healthz` and `/readyz`.
+6. Run checks: `npm run typecheck`, `npm run lint`, `npm test`, and `npm run eval`.
 
 For visual QA, start the app and run `npm run screenshots` in an environment with Microsoft Edge installed; it captures exact 390px and 1440px viewports into `docs/screenshots/`.
 
