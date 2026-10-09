@@ -9,7 +9,8 @@ import { SimulatedSpeechProvider } from "../packages/channels/src/voice.js";
 import { ReplayGuard, deliverWebhook, verifyWebhookSignature, webhookSignature } from "../packages/shared/src/webhooks.js";
 import { ScanJobRegistry } from "../apps/api/src/jobs.js";
 import type { ScanResult } from "../packages/risk-engine/src/types.js";
-import { assessRequestSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "../apps/api/src/validation.js";
+import { assessRequestSchema, authLoginSchema, authRegisterSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "../apps/api/src/validation.js";
+import { MemoryAuthStore, hashPassword, normalizeEmail, verifyPassword } from "../apps/api/src/auth.js";
 
 test("policy bands resolve actions and escalate novel or high-value transfers", () => {
   assert.equal(resolveAction(0), "allow");
@@ -132,4 +133,41 @@ test("new request schemas validate B2B, combined, webhook and voice payloads", (
   assert.equal(webhookRequestSchema.safeParse({ url: "http://hook.example", events: ["scan.completed"] }).success, false);
   assert.equal(webhookRequestSchema.safeParse({ url: "https://hook.example/x", events: ["scan.completed"] }).success, true);
   assert.equal(voiceSpeakRequestSchema.safeParse({ text: "hi", language: "yo" }).success, true);
+});
+
+test("password hashing round-trips and rejects wrong passwords", async () => {
+  const hash = await hashPassword("a very long password here");
+  assert.notEqual(hash, "a very long password here");
+  assert.equal(hash.startsWith("scrypt$"), true);
+  assert.equal(await verifyPassword("a very long password here", hash), true);
+  assert.equal(await verifyPassword("wrong password", hash), false);
+  assert.equal(await verifyPassword("any", "not-a-hash"), false);
+});
+
+test("auth identifiers normalise and registration schemas enforce rules", () => {
+  assert.equal(normalizeEmail("  Ada@Example.COM "), "ada@example.com");
+  assert.equal(authRegisterSchema.safeParse({ email: "ada@example.com", password: "longenough123" }).success, true);
+  assert.equal(authRegisterSchema.safeParse({ email: "ada@example.com", password: "short" }).success, false);
+  assert.equal(authRegisterSchema.safeParse({ email: "not-an-email", password: "longenough123" }).success, false);
+  assert.equal(authLoginSchema.safeParse({ email: "ada@example.com", password: "anything" }).success, true);
+  assert.equal(authLoginSchema.safeParse({}).success, false);
+});
+
+test("in-memory auth store handles sign-up, session lookup, and sign-out", async () => {
+  const store = new MemoryAuthStore();
+  const account = await store.createAccount("ada@example.com", "hash");
+  assert.ok(account);
+  assert.equal(await store.createAccount("ada@example.com", "hash"), null);
+  const found = await store.findAccount("ada@example.com");
+  assert.ok(found);
+  assert.equal(found.passwordHash, "hash");
+  const expiresAt = new Date(Date.now() + 60_000);
+  await store.createSession({ userId: account.id, email: account.email, tokenHash: "tok", expiresAt });
+  const session = await store.findSession("tok");
+  assert.ok(session);
+  assert.equal(session.email, "ada@example.com");
+  assert.equal(session.revokedAt, null);
+  await store.revokeSession("tok");
+  assert.ok((await store.findSession("tok"))!.revokedAt);
+  assert.equal(await store.findSession("nope"), null);
 });
