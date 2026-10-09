@@ -53,15 +53,16 @@
             <thead><tr><th>Mode</th><th>Header / cookie</th><th>For</th></tr></thead>
             <tbody>
               <tr><td>Session cookie</td><td><code>Cookie: shield_session=…</code></td><td>The Shield web app (register, sign in, certificates, reports).</td></tr>
-              <tr><td>Integration key</td><td><code>X-Api-Key: sk_live_…</code></td><td>Banks, fintechs and servers calling <code>/v1/integrations/*</code>.</td></tr>
+              <tr><td>Integration key</td><td><code>X-Api-Key: shd_live_…</code></td><td>Banks, fintechs and servers calling <code>/v1/integrations/*</code>.</td></tr>
               <tr><td>Moderator key</td><td><code>Authorization: Bearer …</code></td><td>Reviewing pending community reports.</td></tr>
             </tbody>
           </table>
+          <p>Signed-in accounts can list active sessions at <code>GET /v1/auth/sessions</code> and revoke all other sessions with <code>POST /v1/auth/sessions/revoke-others</code>. Password reset and email verification are not available yet.</p>
           <h3>Integration keys</h3>
           <p>Create a key in the <a href="/integrations">developer dashboard</a> (signed in) or via the API. Keys carry <em>scopes</em>: <code>scans:write</code>, <code>lookup:read</code>, <code>directory:read</code>, <code>certificates:read</code>. The raw key is shown exactly once — store it on your server's secret manager.</p>
           <pre class="code"><code>curl https://your-shield-host/v1/integrations/scan \
   -H "Content-Type: application/json" \
-  -H "X-Api-Key: sk_live_…" \
+  -H "X-Api-Key: shd_live_…" \
   -d '{"text":"Please send your OTP to 0912 345 6789 now","language":"en"}'</code><button data-copy>Copy</button></pre>
         </section>
 
@@ -72,7 +73,7 @@
   method: "POST",
   headers: {
     "Content-Type": "application/json",
-    "X-Api-Key": "sk_live_…"
+    "X-Api-Key": "shd_live_…"
   },
   body: JSON.stringify({ text: "Send your OTP to 0912 345 6789" })
 });
@@ -113,13 +114,13 @@ const result = await response.json();
           <p class="endpoint">POST <code>/v1/assess</code> (tenant API key, <code>Authorization: Bearer</code>)</p>
           <pre class="code"><code>{ "amount": 6000000, "payeeNovel": true, "accountAgeDays": 2, "message": "Send your OTP now" }</code><button data-copy>Copy</button></pre>
           <p class="endpoint">→ <code>{ "action": "block", "risk_score": 84, "policy": "…" }</code></p>
-          <p>Actions: <code>allow</code>, <code>warn</code>, <code>delay</code>, <code>review</code>, <code>block</code>. Optional custom <code>policy.bands</code> map scores to your own actions.</p>
+          <p>Actions: <code>allow</code>, <code>warn</code>, <code>delay</code>, <code>review</code>, <code>block</code>. Custom <code>policy.bands</code> are accepted only in development; production policy must come from trusted server configuration.</p>
         </section>
 
         <section id="directory">
           <h2>Official-channel check</h2>
           <p class="endpoint">POST <code>/v1/integrations/verify-channel</code> · <code>directory:read</code></p>
-          <pre class="code"><code>curl -X POST /v1/integrations/verify-channel -H "X-Api-Key: sk_live_…" \
+          <pre class="code"><code>curl -X POST /v1/integrations/verify-channel -H "X-Api-Key: shd_live_…" \
   -H "Content-Type: application/json" -d '{"type":"phone","value":"0912 345 6789"}'
 
 // 200
@@ -151,10 +152,9 @@ const result = await response.json();
         <section id="certificates">
           <h2>Verifiable checks</h2>
           <p class="endpoint">POST <code>/v1/certificates</code> (session) · GET <code>/v1/certificates/:token</code> · GET <code>/c/:token</code></p>
-          <pre class="code"><code>{ "verdict": "likely_scam", "risk_score": 45, "scam_types": ["bank_impersonation"],
-  "message": "Please send your OTP to 0912 345 6789 now" }</code><button data-copy>Copy</button></pre>
+          <pre class="code"><code>{ "scan_id": "3f1a…" }</code><button data-copy>Copy</button></pre>
           <p class="endpoint">→ <code>201 { "certificate_id": "…", "card_url": "/c/…", "verify_url": "/v1/certificates/…", "verified_until": "…" }</code></p>
-          <p>The card renders at <code>/c/:token</code>. Verifying the token (<code>GET /v1/certificates/:token</code> or <code>/v1/integrations/certificates/:token</code>) returns the sealed payload — tampering or expiry fail validation. Helps users share <em>“I checked this”</em> across WhatsApp without trusting a screenshot.</p>
+          <p>The verdict, score, categories and redacted message are taken from the <b>server-side scan record</b> for <code>scan_id</code> — never from the request — so a card can never claim a scam message is safe. You can only seal a scan you ran while signed in, and scans expire after 48 hours. The card renders at <code>/c/:token</code>; verifying the token (<code>GET /v1/certificates/:token</code> or <code>/v1/integrations/certificates/:token</code>) returns the sealed payload — tampering or expiry fail validation.</p>
         </section>
 
         <section id="voice">
@@ -205,7 +205,7 @@ const result = await response.json();
         <section id="webhooks">
           <h2>Webhooks</h2>
           <p class="endpoint">POST/GET <code>/v1/webhooks</code> · DELETE <code>/v1/webhooks/:id</code> (tenant API key)</p>
-          <p>Events: <code>scan.completed</code>, <code>assess.completed</code>, <code>report.verified</code>. Delivery signatures verify with the webhook secret; retries follow <code>Retry-After</code>.</p>
+          <p>Events: <code>scan.completed</code>, <code>assess.completed</code>, <code>fraud_wave.detected</code>. Delivery signatures verify with the webhook secret. Webhook delivery currently runs in-process; durable retries are not yet available.</p>
         </section>
 
         <section id="bank-guide">
