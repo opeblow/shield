@@ -8,6 +8,36 @@ export interface SpeechProvider {
   speak(text: string, language: Language): Promise<Speech>;
 }
 
+/** Selector over named speech providers so synthesis can be swapped per request (pluggable TTS). */
+export class SpeechProviderRegistry {
+  private readonly providers = new Map<string, SpeechProvider>();
+
+  register(name: string, provider: SpeechProvider): this {
+    this.providers.set(name, provider);
+    return this;
+  }
+
+  names(): string[] {
+    return [...this.providers.keys()];
+  }
+
+  get(name: string): SpeechProvider | null {
+    return this.providers.get(name) ?? null;
+  }
+
+  /** Resolves "auto" to the preferred provider, a literal name, or null when unknown. */
+  resolve(preferred = "simulated"): { name: string; provider: SpeechProvider } | null {
+    if (preferred !== "auto") {
+      const provider = this.providers.get(preferred);
+      if (provider) return { name: preferred, provider };
+      return null;
+    }
+    const name = this.providers.has("simulated") ? "simulated" : ([...this.providers.keys()][0] ?? null);
+    if (!name) return null;
+    return { name, provider: this.providers.get(name)! };
+  }
+}
+
 /** Deterministic provider used by the local simulators and tests; never calls a network. */
 export class SimulatedSpeechProvider implements SpeechProvider {
   constructor(private readonly transcript = "") {}
