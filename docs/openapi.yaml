@@ -1,0 +1,362 @@
+openapi: 3.1.0
+info:
+  title: Shield Fraud-Defence API
+  version: 1.0.0
+  description: >
+    Fraud-detection API for Nigerian consumer bank transfers. Scan text, URLs,
+    QR payloads, phones and accounts; assess transfers with a policy engine;
+    stream deep scans; and subscribe to webhook events. All customer-facing
+    identifiers are blinded before storage.
+servers:
+  - url: https://api.shield.example
+    description: Production
+  - url: http://localhost:3001
+    description: Local development
+tags:
+  - name: Scans
+  - name: Assess
+  - name: Lookup
+  - name: Reports
+  - name: Webhooks
+  - name: Usage
+  - name: Voice
+  - name: Ops
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      tags: [Ops]
+      security: []
+      summary: Liveness probe
+      responses:
+        "200": { description: Process is alive, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+  /readyz:
+    get:
+      tags: [Ops]
+      security: []
+      summary: Readiness probe
+      responses:
+        "200": { description: Ready to serve traffic, content: { application/json: { schema: { $ref: "#/components/schemas/Ready" } } } }
+        "503": { description: A dependency is unavailable }
+  /v1/scans:
+    post:
+      tags: [Scans]
+      summary: Scan text or combined inputs
+      description: Runs the rule engine and returns a verdict. `mode: deep` runs the fast pass first and returns `upgrade_url` for the deep stream.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScanRequest" }
+      responses:
+        "200":
+          description: Scan verdict
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ScanResult"
+                  - type: object
+                    properties:
+                      upgrade_url: { type: string, description: SSE endpoint for the deep pass }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "415": { $ref: "#/components/responses/UnsupportedMedia" }
+        "429": { description: Rate limited }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /v1/scans/{id}/stream:
+    get:
+      tags: [Scans]
+      summary: Stream scan progress (Server-Sent Events)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Text event stream with `fast`, `deep` and `final` events
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "404": { description: Unknown scan stream }
+  /v1/assess:
+    post:
+      tags: [Assess]
+      summary: Assess a transfer against a risk policy
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssessRequest" }
+      responses:
+        "200":
+          description: Assessment with action, score and customer message
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Assessment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/lookup:
+    post:
+      tags: [Lookup]
+      summary: Look up community reports for an identifier
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, value]
+              properties:
+                type: { type: string, enum: [account, phone, url] }
+                value: { type: string }
+      responses:
+        "200":
+          description: Aggregated report summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LookupResult" }
+  /v1/reports:
+    post:
+      tags: [Reports]
+      summary: Submit a community scam report
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReportRequest" }
+      responses:
+        "201": { description: Report accepted for moderation }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /v1/usage:
+    get:
+      tags: [Usage]
+      summary: Current tenant usage and quota
+      responses:
+        "200":
+          description: Usage counters
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Usage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/webhooks:
+    get:
+      tags: [Webhooks]
+      summary: List webhook subscriptions
+      responses:
+        "200":
+          description: Webhook list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhooks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Webhook" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Webhooks]
+      summary: Create a webhook subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, events]
+              properties:
+                url: { type: string, description: Must be HTTPS }
+                events:
+                  type: array
+                  items: { type: string, enum: [scan.completed, report.verified, quota.threshold] }
+      responses:
+        "201":
+          description: Webhook created; the signing secret is shown once
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  secret: { type: string }
+                  events: { type: array, items: { type: string } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/webhooks/{id}:
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook subscription
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: Not found }
+  /v1/voice/speak:
+    post:
+      tags: [Voice]
+      summary: Synthesize a warning in a Tier 1 language
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text, language]
+              properties:
+                text: { type: string, maxLength: 500 }
+                language: { $ref: "#/components/schemas/Language" }
+      responses:
+        "200":
+          description: Base64 audio and the provider used
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Speech" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { description: Rate limited }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, description: Tenant API key }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    UnsupportedMedia:
+      description: Content-Type must be application/json
+    Unavailable:
+      description: A required dependency is unavailable
+  schemas:
+    Language: { type: string, enum: [en, pcm, yo, ha, ig] }
+    Health: { type: object, properties: { status: { type: string } } }
+    Ready:
+      type: object
+      properties:
+        status: { type: string }
+        checks:
+          type: object
+          additionalProperties: { type: string, enum: [ok, error, skipped] }
+    Problem:
+      type: object
+      properties:
+        error: { type: string }
+        detail: { type: string }
+    ScanInput:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [text, url, qr, phone, account, image, document, audio, video] }
+        text: { type: string }
+        value: { type: string }
+        payload: { type: string }
+        bank: { type: string }
+        number: { type: string }
+        content_base64: { type: string }
+    ScanRequest:
+      type: object
+      properties:
+        text: { type: string, maxLength: 5000 }
+        inputs:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ScanInput" }
+        language: { $ref: "#/components/schemas/Language" }
+        mode: { type: string, enum: [fast, deep], default: fast }
+    ScanResult:
+      type: object
+      required: [scan_id, verdict, risk_score, confidence, input_types]
+      properties:
+        scan_id: { type: string, format: uuid }
+        verdict: { type: string, enum: [safe, suspicious, scam] }
+        risk_score: { type: integer, minimum: 0, maximum: 100 }
+        confidence: { type: number }
+        scam_types: { type: array, items: { type: string } }
+        reasons: { type: array, items: { type: object } }
+        input_types: { type: array, items: { type: string } }
+        customer_message: { type: object }
+        model_version: { type: string }
+        latency_ms: { type: number }
+    AssessRequest:
+      type: object
+      properties:
+        amount: { type: number, minimum: 0 }
+        currency: { type: string }
+        beneficiary: { type: string }
+        beneficiaryAccount: { type: string }
+        accountAgeDays: { type: integer, minimum: 0 }
+        payeeNovel: { type: boolean }
+        channel: { type: string, enum: [app, ussd, atm, web, agent] }
+        hourOfDay: { type: integer, minimum: 0, maximum: 23 }
+        customerScans: { type: integer, minimum: 0 }
+        message: { type: string }
+        language: { $ref: "#/components/schemas/Language" }
+        policy: { type: object, description: Optional policy override }
+    Assessment:
+      type: object
+      required: [action, risk_score]
+      properties:
+        action: { type: string, enum: [allow, warn, review, delay, block] }
+        risk_score: { type: integer }
+        confidence: { type: number }
+        reasons: { type: array, items: { type: object } }
+        customer_message: { type: object }
+    LookupResult:
+      type: object
+      properties:
+        type: { type: string }
+        reports: { type: integer }
+        verifiedReports: { type: integer }
+        score: { type: integer }
+        lastSeen: { type: [string, "null"] }
+    ReportRequest:
+      type: object
+      required: [type, value, scamType]
+      properties:
+        type: { type: string, enum: [account, phone, url] }
+        value: { type: string }
+        scamType: { type: string }
+        evidence: { type: string }
+    Webhook:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        events: { type: array, items: { type: string } }
+        status: { type: string, enum: [active, disabled] }
+    Usage:
+      type: object
+      properties:
+        tenant_id: { type: string, format: uuid }
+        usage:
+          type: array
+          items:
+            type: object
+            properties:
+              metric: { type: string }
+              quantity: { type: integer }
+        quota:
+          type: object
+          properties:
+            plan: { type: string }
+            monthly_scans: { type: integer }
+    Speech:
+      type: object
+      properties:
+        language: { $ref: "#/components/schemas/Language" }
+        mime_type: { type: string }
+        audio_base64: { type: string }
+        provider: { type: string }
