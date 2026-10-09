@@ -34,6 +34,14 @@ Have an account already? The **Sign in** page takes your email and password, ver
 
 New here? The **Get started** (Create account) page sets up your Shield account. Pick a password of at least 8 characters; it is stored only as a hash, never in plain text.
 
+### Scan
+
+<p align="center">
+<a href="docs/screenshots/shield-scan.png"><img src="docs/screenshots/shield-scan.png" alt="The Shield scan page" width="840" /></a>
+</p>
+
+Once signed in you land on the **Scan** page. Paste the suspicious message, link, or payment request and press **Check this message**. Shield redacts common private details, surfaces pressure tactics and secret-code requests, and returns a plain-language verdict — a red **Likely scam** here. A result is a signal to verify through an official channel, never proof that a message is safe.
+
 Shield is a privacy-minded scanning service for suspicious messages. It applies explainable rules and, when configured, asks the OpenAI API for a structured assessment of redacted text. A result is a signal to verify through an official channel; it is never proof that a message is safe.
 
 Repository: [github.com/opeblow/shield](https://github.com/opeblow/shield)
