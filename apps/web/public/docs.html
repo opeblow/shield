@@ -182,6 +182,14 @@ const result = await response.json();
           <p class="endpoint">→ <code>{ "count": 2, "results": [ { "verdict": "likely_scam", "risk_score": 58, "shield": { … } }, … ] }</code></p>
         </section>
 
+        <section id="media">
+          <h2>Media uploads</h2>
+          <p class="endpoint">POST <code>/v1/media/scan</code> — raw bytes with the media type as <code>Content-Type</code>.</p>
+          <pre class="code"><code>curl -X POST /v1/media/scan -H "Content-Type: image/png" --data-binary @screenshot.png</code><button data-copy>Copy</button></pre>
+          <p class="endpoint">→ <code>{ "accepted": true, "kind": "image", "bytes": 24123, "analysis": { "scanned": false, "note": "…" } }</code></p>
+          <p>Magic bytes are sniffed to confirm the true type; SVG/executables and mismatched declared types are refused (<code>415</code>) and uploads are capped at 8&nbsp;MiB (<code>413</code>). The artifact is validated, never rendered — send the message text to <code>/v1/scans</code> for a verdict.</p>
+        </section>
+
         <section id="waves">
           <h2>Fraud-wave alerts</h2>
           <p class="endpoint">GET <code>/v1/alerts/waves</code> (session) — active and resolved waves from the last 48 hours.</p>
