@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shield — check a message</title>
+  <style>
+    body { margin: 0; width: 340px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #f7f8f4; color: #0d2925; }
+    .panel { padding: 16px; }
+    h1 { font-size: 15px; margin: 0 0 10px; }
+    h1 img { width: 20px; height: 20px; vertical-align: -4px; margin-right: 6px; }
+    textarea { width: 100%; box-sizing: border-box; min-height: 96px; resize: vertical; border: 1px solid #c2d3cd; border-radius: 8px; padding: 8px; font: inherit; }
+    button { margin-top: 10px; width: 100%; background: #0d2925; color: #fff; border: 0; border-radius: 8px; padding: 9px; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    details { margin-top: 12px; border-top: 1px solid #e2e7e2; padding-top: 10px; font-size: 12px; }
+    summary { cursor: pointer; color: #5b6b66; }
+    label { display: block; font-size: 12px; margin: 6px 0 2px; color: #5b6b66; }
+    input { width: 100%; box-sizing: border-box; border: 1px solid #c2d3cd; border-radius: 6px; padding: 6px; font-size: 12px; }
+    #status { margin-top: 10px; font-size: 12px; min-height: 16px; }
+    #status.error { color: #9b1c1c; }
+    #result { margin-top: 6px; font-size: 12px; }
+    .verdict { font-weight: 700; }
+    .safe { color: #16794a; } .caution { color: #a2691a; } .scam { color: #9b1c1c; }
+    ul { margin: 6px 0 0; padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1><img src="icon-48.png" alt="">Shield — check a message</h1>
+    <textarea id="text" placeholder="Paste the suspicious message or link…"></textarea>
+    <button id="scan" disabled>Check this message</button>
+    <div id="status"></div>
+    <div id="result"></div>
+    <details>
+      <summary>Connection settings</summary>
+      <label for="base">Shield base URL</label>
+      <input id="base" placeholder="https://app.shield.example">
+      <label for="key">Integration API key (scans:write)</label>
+      <input id="key" type="password" placeholder="shl_…">
+      <p>Get a key from your Shield dashboard → Integrations → Create key.</p>
+    </details>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
