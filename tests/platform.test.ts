@@ -129,6 +129,17 @@ test("scan job registry replays stages and reports completion for streaming", ()
   assert.deepEqual(seen, ["fast", "final"]);
   assert.equal(jobs.isDone("job-1"), true);
   assert.equal(jobs.subscribe("missing", () => {}), undefined);
+
+  const bounded = new ScanJobRegistry(1, 0);
+  bounded.create("completed");
+  bounded.publish("completed", { stage: "final", result: {} as ScanResult });
+  bounded.complete("completed");
+  bounded.create("replacement");
+  assert.equal(bounded.has("completed"), false, "expired completed results are evicted");
+  assert.equal(bounded.has("replacement"), true);
+  const full = new ScanJobRegistry(1);
+  full.create("active");
+  assert.throws(() => full.create("over-capacity"), /scan_capacity_exceeded/);
 });
 
 test("new request schemas validate B2B, combined, webhook and voice payloads", () => {
