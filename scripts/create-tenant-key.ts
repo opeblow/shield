@@ -12,7 +12,7 @@ if (!name || !databaseUrl || !pepper || Buffer.byteLength(pepper) < 32) {
   try {
     const tenantId = await repository.createTenant(name);
     const key = generateApiKey("test");
-    await repository.createApiKey(tenantId, key, Buffer.from(pepper), ["scans:write"]);
+    await repository.createApiKey(tenantId, key, Buffer.from(pepper), ["scans:write", "billing:read"]);
     process.stdout.write(`Tenant ID: ${tenantId}\nAPI key (shown once): ${key}\n`);
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : "Tenant key creation failed"}\n`);

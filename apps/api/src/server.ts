@@ -28,6 +28,7 @@ import { buildShieldContext, lookupIntelligence } from "./context.js";
 import { validateArtifact } from "./ingestion.js";
 import { previewUrl } from "./preview.js";
 import { MemoryWaveStore, PgWaveStore, WaveWatch, type WaveStore } from "./waves.js";
+import { BILLING_RATES, calculateUsageEstimate } from "./billing.js";
 
 const env = loadEnv();
 const provider = new OpenAiProvider(env.openAiKey, env.openAiModel);
@@ -658,6 +659,22 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(JSON.stringify({ tenant_id: auth.tenantId, usage, quota: { plan: "free", monthly_scans: 1000 } }));
     } catch { problem(res, 503, "Usage unavailable", "Usage could not be read safely."); }
+    return;
+  }
+  if (req.method === "GET" && path === "/v1/billing/plans") {
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "public, max-age=300" });
+    res.end(JSON.stringify(BILLING_RATES));
+    return;
+  }
+  if (req.method === "GET" && path === "/v1/billing/usage") {
+    const auth = await resolveTenant(req, "billing:read");
+    if (auth.status !== "ok") { problem(res, 401, "Unauthorized", "A tenant API key with billing:read scope is required."); return; }
+    if (!repository) { problem(res, 503, "Billing unavailable", "Usage billing requires persistent storage."); return; }
+    try {
+      const usage = await repository.usageSummary(auth.tenantId);
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ tenant_id: auth.tenantId, estimate: calculateUsageEstimate(usage) }));
+    } catch { problem(res, 503, "Billing unavailable", "Usage estimate could not be calculated."); }
     return;
   }
   if (path === "/v1/webhooks" && (req.method === "GET" || req.method === "POST")) {

@@ -11,6 +11,7 @@ import { ScanJobRegistry } from "../apps/api/src/jobs.js";
 import type { ScanResult } from "../packages/risk-engine/src/types.js";
 import { assessRequestSchema, authLoginSchema, authRegisterSchema, batchScanRequestSchema, linkPreviewRequestSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "../apps/api/src/validation.js";
 import { MemoryAuthStore, hashPassword, normalizeEmail, verifyPassword } from "../apps/api/src/auth.js";
+import { calculateUsageEstimate } from "../apps/api/src/billing.js";
 import { canonicalPhone, domainOf, findOfficialChannel } from "../apps/api/src/directory.js";
 import { MemoryReputationStore, identifierKey, intelligenceFromSummaries, labelFor } from "../apps/api/src/reputation.js";
 import { CERTIFICATE_TTL_SECONDS, certificateCardHtml, issueCertificate, verifyCertificate } from "../apps/api/src/certificates.js";
@@ -184,6 +185,16 @@ test("in-memory auth store handles sign-up, session lookup, and sign-out", async
   await store.revokeSession("tok");
   assert.ok((await store.findSession("tok"))!.revokedAt);
   assert.equal(await store.findSession("nope"), null);
+});
+
+test("billing estimates use published rates and ignore unknown meters", () => {
+  assert.deepEqual(calculateUsageEstimate([{ metric: "scan", quantity: 3 }, { metric: "assess", quantity: 2 }, { metric: "unknown", quantity: 100 }]), {
+    currency: "USD", period: "trailing_30_days", status: "estimate",
+    lines: [
+      { metric: "scan", quantity: 3, unit: "scan", unit_price_minor: 1, amount_minor: 3 },
+      { metric: "assess", quantity: 2, unit: "assessment", unit_price_minor: 2, amount_minor: 4 }
+    ], total_minor: 7
+  });
 });
 
 test("official-channel directory normalises phones and domains and finds banks and telcos", () => {
