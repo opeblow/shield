@@ -59,6 +59,13 @@ qrFile.addEventListener('change', async () => {
 
 message.addEventListener('input', () => { count.textContent = `${message.value.length.toLocaleString()} / 20,000`; });
 
+const incoming = new URLSearchParams(window.location.search).get('text') ?? '';
+if (incoming && !message.value) {
+  message.value = incoming.slice(0, 20000);
+  count.textContent = `${message.value.length.toLocaleString()} / 20,000`;
+  try { window.history.replaceState({}, '', window.location.pathname); } catch { /* keep ?text for deep links */ }
+}
+
 function verdictLabel(verdict) {
   return ({ safe: 'No scam signs found', caution: 'Pause and check', likely_scam: 'Likely scam', scam: 'Strong scam signs' })[verdict] ?? 'Scan result';
 }
