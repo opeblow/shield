@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="theme-color" content="#0d2925">
+    <meta name="description" content="Shield API reference for banks and developers. Check messages, verify official channels, read fraud reputation, and issue verifiable check cards.">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <title>Shield API reference — for banks and developers</title>
+  </head>
+  <body class="docs-body">
+    <header class="topbar topbar-dark">
+      <a class="brand" href="/" aria-label="Shield home"><span class="brand-mark" aria-hidden="true">S</span><span>shield<span class="brand-dot">.</span></span></a>
+      <nav class="nav-actions" aria-label="Primary">
+        <a class="btn btn-ghost btn-small" href="/">Home</a>
+        <a class="btn btn-primary btn-small" href="/auth">Get started</a>
+      </nav>
+    </header>
+    <div class="docs-layout">
+      <aside class="docs-nav" aria-label="Reference sections">
+        <nav>
+          <a href="#overview" data-section="overview">Overview</a>
+          <a href="#auth" data-section="auth">Authentication</a>
+          <a href="#quickstart" data-section="quickstart">Quickstart</a>
+          <h2>Reference</h2>
+          <a href="#scan" data-section="scan">Scan message</a>
+          <a href="#assess" data-section="assess">Assess transaction</a>
+          <a href="#directory" data-section="directory">Official-channel check</a>
+          <a href="#lookup" data-section="lookup">Reputation lookup</a>
+          <a href="#reports" data-section="reports">Report identifier</a>
+          <a href="#certificates" data-section="certificates">Verifiable checks</a>
+          <a href="#voice" data-section="voice">Voice verdicts</a>
+          <a href="#webhooks" data-section="webhooks">Webhooks</a>
+          <h2>Guides</h2>
+          <a href="#bank-guide" data-section="bank-guide">Bank integration flow</a>
+          <a href="#lists" data-section="lists">API keys</a>
+          <a href="#errors" data-section="errors">Errors &amp; limits</a>
+        </nav>
+      </aside>
+      <main class="docs-main">
+        <section id="overview">
+          <h1>Shield API reference</h1>
+          <p class="lead">Scan suspicious messages, verify official bank channels, read verified fraud reputation, and issue shareable check cards — from your app or banking platform.</p>
+          <div class="doc-banner"><b>Base URL</b> <code>https://your-shield-host</code> <span>·</span> <b>Spec</b> <a href="/openapi.yaml">openapi.yaml</a></div>
+          <p>Every endpoint returns a typed JSON object shown in each example below. Errors follow <a href="#errors">RFC 7807 problem+json</a>.<br>Shield is versioned at <code>/v1</code>. Breaking changes arrive as a new version; <code>/v1</code> is stable.</p>
+        </section>
+
+        <section id="auth">
+          <h2>Authentication</h2>
+          <p>Three authentication modes exist. Pick the one that matches your caller:</p>
+          <table class="doc-table">
+            <thead><tr><th>Mode</th><th>Header / cookie</th><th>For</th></tr></thead>
+            <tbody>
+              <tr><td>Session cookie</td><td><code>Cookie: shield_session=…</code></td><td>The Shield web app (register, sign in, certificates, reports).</td></tr>
+              <tr><td>Integration key</td><td><code>X-Api-Key: sk_live_…</code></td><td>Banks, fintechs and servers calling <code>/v1/integrations/*</code>.</td></tr>
+              <tr><td>Moderator key</td><td><code>Authorization: Bearer …</code></td><td>Reviewing pending community reports.</td></tr>
+            </tbody>
+          </table>
+          <h3>Integration keys</h3>
+          <p>Create a key in the <a href="/integrations">developer dashboard</a> (signed in) or via the API. Keys carry <em>scopes</em>: <code>scans:write</code>, <code>lookup:read</code>, <code>directory:read</code>, <code>certificates:read</code>. The raw key is shown exactly once — store it on your server's secret manager.</p>
+          <pre class="code"><code>curl https://your-shield-host/v1/integrations/scan \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: sk_live_…" \
+  -d '{"text":"Please send your OTP to 0912 345 6789 now","language":"en"}'</code><button data-copy>Copy</button></pre>
+        </section>
+
+        <section id="quickstart">
+          <h2>Quickstart</h2>
+          <p>Scan a message in your banking app before the transfer form is shown:</p>
+          <pre class="code"><code>const response = await fetch("/v1/integrations/scan", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Api-Key": "sk_live_…"
+  },
+  body: JSON.stringify({ text: "Send your OTP to 0912 345 6789" })
+});
+const result = await response.json();
+// { verdict: "likely_scam", risk_score: 45, shield: { official_channels: […], reputation: […] } }</code><button data-copy>Copy</button></pre>
+          <p>Gate the transfer on <code>verdict</code>, or pass the verdict into <a href="#assess">transaction assessment</a> so your existing policy engine decides.</p>
+        </section>
+
+        <section id="scan">
+          <h2>Scan a message</h2>
+          <p class="endpoint">POST <code>/v1/scans</code> · POST <code>/v1/integrations/scan</code></p>
+          <p><b>Request</b> — text or combined inputs, optional Tier 1 language (<code>en</code>, <code>pcm</code>, <code>yo</code>, <code>ha</code>, <code>ig</code>).</p>
+          <pre class="code"><code>{ "text": "Please send your OTP to 0912 345 6789 now", "language": "en" }</code><button data-copy>Copy</button></pre>
+          <p><b>Response</b> — a typed <code>ScanResult</code> plus a <code>shield</code> context block:</p>
+          <pre class="code"><code>{
+  "scan_id": "…",
+  "verdict": "likely_scam",
+  "risk_score": 45,
+  "scam_types": ["bank_impersonation"],
+  "reasons": [ { "code": "requests_secret_code", "text": "It asks you to share a private code…", "evidence": "send your OTP" } ],
+  "community": { "available": true, "reports": 3 },
+  "customer_message": { "language": "en", "text": "…" },
+  "shield": {
+    "reputation": [
+      { "kind": "phone", "value": "0912 345 6789", "reports": 3, "verified": 2, "pending": 1,
+        "first_seen": "2026-09-01T08:00:00.000Z", "last_seen": "2026-10-01T08:00:00.000Z" }
+    ],
+    "official_channels": [
+      { "value": "0912 345 6789", "status": "not_found", "name": null, "shortName": null }
+    ]
+  }
+}</code><button data-copy>Copy</button></pre>
+          <p><b>Verdicts</b> — <code>safe</code> · <code>caution</code> · <code>likely_scam</code> · <code>scam</code>. A verified report yields <code>scam</code> (hard evidence).</p>
+        </section>
+
+        <section id="assess">
+          <h2>Assess a transaction</h2>
+          <p class="endpoint">POST <code>/v1/assess</code> (tenant API key, <code>Authorization: Bearer</code>)</p>
+          <pre class="code"><code>{ "amount": 6000000, "payeeNovel": true, "accountAgeDays": 2, "message": "Send your OTP now" }</code><button data-copy>Copy</button></pre>
+          <p class="endpoint">→ <code>{ "action": "block", "risk_score": 84, "policy": "…" }</code></p>
+          <p>Actions: <code>allow</code>, <code>warn</code>, <code>delay</code>, <code>review</code>, <code>block</code>. Optional custom <code>policy.bands</code> map scores to your own actions.</p>
+        </section>
+
+        <section id="directory">
+          <h2>Official-channel check</h2>
+          <p class="endpoint">POST <code>/v1/integrations/verify-channel</code> · <code>directory:read</code></p>
+          <pre class="code"><code>curl -X POST /v1/integrations/verify-channel -H "X-Api-Key: sk_live_…" \
+  -H "Content-Type: application/json" -d '{"type":"phone","value":"0912 345 6789"}'
+
+// 200
+{
+  "value": "0912 345 6789",
+  "official": "not_found",
+  "channel": null,
+  "reputation": { "kind": "phone", "value": "0912 345 6789", "reports": 3, "verified": 2, "pending": 1 }
+}</code><button data-copy>Copy</button></pre>
+          <p>Use it in your send-money flow: if the beneficiary's phone or a link in the message is <em>not</em> an official channel for the named bank, surface a confirmation screen.</p>
+        </section>
+
+        <section id="lookup">
+          <h2>Reputation lookup</h2>
+          <p class="endpoint">POST <code>/v1/integrations/lookup</code> · <code>lookup:read</code> — <b>identifier</b> type <code>account | phone | url</code></p>
+          <pre class="code"><code>{ "type": "phone", "value": "0912 345 6789" }</code><button data-copy>Copy</button></pre>
+          <p class="endpoint">→ <code>{ "kind":"phone", "reports":3, "verified":2, "pending":1, "first_seen":…, "last_seen":… }</code> or <code>404</code>.</p>
+          <p>Only <em>verified</em> reports move the scan verdict. Pending reports are shown as signals, never as proof.</p>
+        </section>
+
+        <section id="reports">
+          <h2>Report an identifier</h2>
+          <p class="endpoint">POST <code>/v1/reputation/reports</code> (session) — body <code>type</code>, <code>value</code>, <code>scamType</code>, optional <code>evidence</code>.</p>
+          <pre class="code"><code>{ "type": "phone", "value": "0912 345 6789", "scamType": "bank_impersonation", "evidence": "asked for OTP" }</code><button data-copy>Copy</button></pre>
+          <p class="endpoint">→ <code>202 { "report_id": "…", "status": "pending", "identifier": "…" }</code></p>
+          <p>A moderator verifies reports. Only after <code>verify</code> does the identifier earn its reputation weight.</p>
+        </section>
+
+        <section id="certificates">
+          <h2>Verifiable checks</h2>
+          <p class="endpoint">POST <code>/v1/certificates</code> (session) · GET <code>/v1/certificates/:token</code> · GET <code>/c/:token</code></p>
+          <pre class="code"><code>{ "verdict": "likely_scam", "risk_score": 45, "scam_types": ["bank_impersonation"],
+  "message": "Please send your OTP to 0912 345 6789 now" }</code><button data-copy>Copy</button></pre>
+          <p class="endpoint">→ <code>201 { "certificate_id": "…", "card_url": "/c/…", "verify_url": "/v1/certificates/…", "verified_until": "…" }</code></p>
+          <p>The card renders at <code>/c/:token</code>. Verifying the token (<code>GET /v1/certificates/:token</code> or <code>/v1/integrations/certificates/:token</code>) returns the sealed payload — tampering or expiry fail validation. Helps users share <em>“I checked this”</em> across WhatsApp without trusting a screenshot.</p>
+        </section>
+
+        <section id="voice">
+          <h2>Voice verdicts</h2>
+          <p class="endpoint">POST <code>/v1/voice/speak</code> — text + Tier 1 language, returns <code>base64</code> audio.</p>
+          <pre class="code"><code>{ "text": "This is likely a scam. Do not send money or share codes.", "language": "pcm" }</code><button data-copy>Copy</button></pre>
+        </section>
+
+        <section id="webhooks">
+          <h2>Webhooks</h2>
+          <p class="endpoint">POST/GET <code>/v1/webhooks</code> · DELETE <code>/v1/webhooks/:id</code> (tenant API key)</p>
+          <p>Events: <code>scan.completed</code>, <code>assess.completed</code>, <code>report.verified</code>. Delivery signatures verify with the webhook secret; retries follow <code>Retry-After</code>.</p>
+        </section>
+
+        <section id="bank-guide">
+          <h2>Bank integration flow</h2>
+          <ol class="doc-ordered">
+            <li><b>Onboard</b> — sign in, mint an integration key with <code>scans:write</code> + <code>directory:read</code>.</li>
+            <li><b>At transfer time</b> — call <code>/v1/integrations/scan</code> with the message the customer pastes; show the <code>shield</code> verdict inline.</li>
+            <li><b>At beneficiary entry</b> — call <code>/v1/integrations/verify-channel</code> when the customer claims a phone or link came from their bank.</li>
+            <li><b>Policy</b> — fold <code>risk_score</code> and <code>verdict</code> into <code>/v1/assess</code> for delayed/review/block actions.</li>
+            <li><b>Incident loop</b> — your customers can report identifiers; verified reports improve everyone's future scans.</li>
+          </ol>
+        </section>
+
+        <section id="lists">
+          <h2>Managing API keys</h2>
+          <p class="endpoint">POST <code>/v1/integration/keys</code> · GET <code>/v1/integration/keys</code> · DELETE <code>/v1/integration/keys/:id</code> (session)</p>
+          <pre class="code"><code>{ "name": "core-banking-transfer-gate", "scopes": ["scans:write", "directory:read"] }</code><button data-copy>Copy</button></pre>
+          <p>The raw <code>key</code> is returned once. Revoke keys per environment (test, prod), never share them, and rotate on personnel changes.</p>
+        </section>
+
+        <section id="errors">
+          <h2>Errors, limits and policies</h2>
+          <table class="doc-table">
+            <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td>400</td><td>Invalid or unverifiable input (also certificate tamper/expiry).</td></tr>
+              <tr><td>401</td><td>Missing or invalid credentials.</td></tr>
+              <tr><td>403</td><td>Key lacks the required scope.</td></tr>
+              <tr><td>404</td><td>Route, report, or reputation not found.</td></tr>
+              <tr><td>409</td><td>Conflict (duplicate account, non-pending report).</td></tr>
+              <tr><td>429</td><td>Rate limited — retry after the stated seconds.</td></tr>
+              <tr><td>413 / 415</td><td>Payload too large / wrong content type.</td></tr>
+              <tr><td>503</td><td>Optional dependency unavailable (no persistence, provider, or keyring).</td></tr>
+            </tbody>
+          </table>
+          <p><b>Limits</b> — consumer scans: 20/min per IP · integration scans: 40/min per key · reports: 3/hour per IP · request bodies ≤ 64 KiB.</p>
+          <p><b>Privacy</b> — message text is redacted before analysis and never stored in full. Identifiers are blind-indexed; the production template encrypts them at rest. Ship <code>Strict-Transport-Security</code> and the documented CSP on any public deployment.</p>
+          <p><b>Languages</b> — result wording ships in English, Nigerian Pidgin, Yorùbá, Hausa, and Igbo. <code>language_reviewed</code> flags copy not yet reviewed by native speakers.</p>
+        </section>
+      </main>
+    </div>
+    <footer class="docs-footer"><a class="brand footer-brand" href="/" aria-label="Shield home"><span class="brand-mark" aria-hidden="true">S</span><span>shield<span class="brand-dot">.</span></span></a><p>Built to help you pause, check, and choose.</p><span>© <span id="year"></span> Shield</span></footer>
+    <script type="module" src="/docs.js"></script>
+  </body>
+</html>
