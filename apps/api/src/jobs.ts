@@ -5,9 +5,19 @@ type Listener = (entry: ScanEvent) => void;
 
 /** In-process registry that backs progressive (SSE) scan results for the single-node deployment. */
 export class ScanJobRegistry {
-  private readonly jobs = new Map<string, { history: ScanEvent[]; done: boolean; listeners: Set<Listener> }>();
+  private readonly jobs = new Map<string, { history: ScanEvent[]; done: boolean; listeners: Set<Listener>; createdAt: number }>();
+  constructor(private readonly maxJobs = 2_000, private readonly ttlMs = 10 * 60_000) {}
 
-  create(id: string): void { this.jobs.set(id, { history: [], done: false, listeners: new Set() }); }
+  create(id: string): void {
+    const now = Date.now();
+    for (const [jobId, job] of this.jobs) if (job.done && job.listeners.size === 0 && now - job.createdAt >= this.ttlMs) this.jobs.delete(jobId);
+    while (this.jobs.size >= this.maxJobs) {
+      const oldestCompleted = [...this.jobs].find(([, job]) => job.done && job.listeners.size === 0)?.[0];
+      if (!oldestCompleted) throw new Error("scan_capacity_exceeded");
+      this.jobs.delete(oldestCompleted);
+    }
+    this.jobs.set(id, { history: [], done: false, listeners: new Set(), createdAt: now });
+  }
 
   publish(id: string, entry: ScanEvent): void {
     const job = this.jobs.get(id);

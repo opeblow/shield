@@ -825,6 +825,7 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({ ...result, shield }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "request_failed";
+      if (message === "scan_capacity_exceeded") { problem(res, 503, "Scan capacity reached", "The scan service is at temporary capacity. Retry shortly."); return; }
       if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
       if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
       problem(res, 400, "Scan failed", message === "Text must contain 2 to 20,000 characters" ? message : "The scan could not be completed.");
