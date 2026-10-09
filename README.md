@@ -68,6 +68,8 @@ Shield also ships as an **installable PWA**: the web manifest declares a share t
 
 Shield is a privacy-minded scanning service for suspicious messages. It applies explainable rules and, when configured, asks the OpenAI API for a structured assessment of redacted text. A result is a signal to verify through an official channel; it is never proof that a message is safe.
 
+**Commercial status:** Shield does not currently provide subscriptions, checkout, payment processing, or a billing API. `BILLING_PROVIDER_KEY` is not used. No charges are collected by this repository; Paystack, Flutterwave, and Bachs integrations are not implemented.
+
 Repository: [github.com/opeblow/shield](https://github.com/opeblow/shield)
 
 ## Local setup
