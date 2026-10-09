@@ -116,7 +116,7 @@ els.form.addEventListener("submit", async (event) => {
 });
 
 els.signOut.addEventListener("click", async () => {
-  await fetch("/v1/auth/signout", { method: "POST" });
+  await fetch("/v1/auth/logout", { method: "POST" });
   window.location.assign("/");
 });
 
