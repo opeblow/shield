@@ -208,6 +208,11 @@ const result = await response.json();
           <p>Events: <code>scan.completed</code>, <code>assess.completed</code>, <code>fraud_wave.detected</code>. Delivery signatures verify with the webhook secret. Webhook delivery currently runs in-process; durable retries are not yet available.</p>
         </section>
 
+        <section id="billing">
+          <h2>Billing usage API</h2>
+          <p><code>GET /v1/billing/plans</code> returns published metered rates. Use a tenant bearer key with <code>billing:read</code> at <code>GET /v1/billing/usage</code> for a trailing 30-day estimate. Estimates are not invoices; checkout and payment collection are not implemented.</p>
+        </section>
+
         <section id="bank-guide">
           <h2>Bank integration flow</h2>
           <ol class="doc-ordered">

@@ -116,6 +116,23 @@ paths:
       summary: Revoke the current session and clear the cookie
       responses:
         "204": { description: Session revoked }
+  /v1/billing/plans:
+    get:
+      tags: [Billing]
+      summary: List Shield's published metered rates
+      responses:
+        "200": { description: Public pricing and metering definitions }
+  /v1/billing/usage:
+    get:
+      tags: [Billing]
+      security:
+        - bearerAuth: []
+      summary: Calculate a trailing 30-day usage estimate
+      description: Requires the tenant API key scope billing:read. Estimates are not invoices; Shield does not collect payment yet.
+      responses:
+        "200": { description: Tenant-scoped usage lines and estimated total in minor currency units }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
   /v1/auth/sessions:
     get:
       tags: [Auth]
