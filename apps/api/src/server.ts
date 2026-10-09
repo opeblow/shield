@@ -29,6 +29,7 @@ import { validateArtifact } from "./ingestion.js";
 import { previewUrl } from "./preview.js";
 import { MemoryWaveStore, PgWaveStore, WaveWatch, type WaveStore } from "./waves.js";
 import { BILLING_RATES, calculateUsageEstimate } from "./billing.js";
+import { ConcurrencyGate } from "./capacity.js";
 
 const env = loadEnv();
 const provider = new OpenAiProvider(env.openAiKey, env.openAiModel);
@@ -78,6 +79,8 @@ const rateLimiter: RateLimiter = env.redisUrl && env.apiKeyPepper
   ? new RedisRateLimiter(env.redisUrl, Buffer.from(env.apiKeyPepper))
   : new MemoryRateLimiter();
 const scanJobs = new ScanJobRegistry();
+const scanCapacity = new ConcurrencyGate(64);
+const assessCapacity = new ConcurrencyGate(32);
 const speechRegistry = new SpeechProviderRegistry().register("simulated", new SimulatedSpeechProvider());
 if (env.openAiKey && env.openAiTranscribeModel && env.openAiTtsModel) {
   speechRegistry.register("openai", new OpenAiSpeechProvider(env.openAiKey, env.openAiTranscribeModel, env.openAiTtsModel));
@@ -140,7 +143,7 @@ async function rememberScan(scanId: string, result: ScanResult, sourceText: stri
   } catch { logEvent("scan_record_failed", { scanId }); }
 }
 
-const server = createServer(async (req, res) => {
+const server = createServer({ maxHeaderSize: 16 * 1024 }, async (req, res) => {
   const requestId = randomUUID();
   const startedAt = performance.now();
   res.setHeader("x-request-id", requestId);
@@ -448,6 +451,8 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (req.method === "POST" && path === "/v1/integrations/scan") {
+    const releaseCapacity = scanCapacity.tryAcquire();
+    if (!releaseCapacity) { problem(res, 503, "Scan capacity reached", "The scan service is at temporary capacity. Retry shortly."); return; }
     try {
       const auth = await resolveIntegration(req, "scans:write");
       if (auth.status !== "ok") { problem(res, auth.code, "Unauthorized", auth.detail); return; }
@@ -475,7 +480,7 @@ const server = createServer(async (req, res) => {
       if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
       if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
       problem(res, 400, "Scan failed", message === "Text must contain 2 to 20,000 characters" ? message : "The scan could not be completed.");
-    }
+    } finally { releaseCapacity(); }
     return;
   }
   if (req.method === "POST" && path === "/v1/integrations/verify-channel") {
@@ -608,6 +613,8 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (req.method === "POST" && path === "/v1/assess") {
+    const releaseCapacity = assessCapacity.tryAcquire();
+    if (!releaseCapacity) { problem(res, 503, "Assessment capacity reached", "The assessment service is at temporary capacity. Retry shortly."); return; }
     try {
       const address = req.socket.remoteAddress ?? "unknown";
       let rate;
@@ -647,7 +654,7 @@ const server = createServer(async (req, res) => {
       if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
       if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
       problem(res, 400, "Assessment failed", "The transaction could not be assessed.");
-    }
+    } finally { releaseCapacity(); }
     return;
   }
   if (req.method === "GET" && path === "/v1/usage") {
@@ -756,6 +763,9 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (req.method === "POST" && path === "/v1/scans") {
+    const releaseCapacity = scanCapacity.tryAcquire();
+    if (!releaseCapacity) { problem(res, 503, "Scan capacity reached", "The scan service is at temporary capacity. Retry shortly."); return; }
+    let capacityTransferred = false;
     try {
       const address = req.socket.remoteAddress ?? "unknown";
       let rate;
@@ -793,13 +803,14 @@ const server = createServer(async (req, res) => {
         } else if (env.nodeEnv === "production") { problem(res, 503, "Storage unavailable", "Scanning is temporarily unavailable."); return; }
         await rememberScan(scanId, fast, sourceText, scanSession?.userId ?? null, tenantId);
         if (tenantId && repository) { try { await repository.recordUsage(tenantId, "scan"); } catch { logEvent("usage_record_failed", { metric: "scan" }); } }
+        capacityTransferred = true;
         void (async () => {
           try {
             const deep = await runScan((text, signals) => provider.assess(text, signals));
             scanJobs.publish(scanId, { stage: "deep", result: deep });
             void dispatchWebhookEvent(tenantId, "scan.completed", deep);
           } catch { logEvent("deep_scan_failed", { scanId }); }
-          finally { scanJobs.complete(scanId); }
+          finally { scanJobs.complete(scanId); releaseCapacity(); }
         })();
         res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
         const shield = await buildShieldContext({ text: sourceText, inputs: scanInput.inputs }, reputationStore);
@@ -829,7 +840,7 @@ const server = createServer(async (req, res) => {
       if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
       if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
       problem(res, 400, "Scan failed", message === "Text must contain 2 to 20,000 characters" ? message : "The scan could not be completed.");
-    }
+    } finally { if (!capacityTransferred) releaseCapacity(); }
     return;
   }
   if (req.method === "POST" && path === "/v1/link-preview") {
@@ -855,6 +866,8 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (req.method === "POST" && path === "/v1/batch/scan") {
+    const releaseCapacity = scanCapacity.tryAcquire();
+    if (!releaseCapacity) { problem(res, 503, "Scan capacity reached", "The scan service is at temporary capacity. Retry shortly."); return; }
     try {
       const address = req.socket.remoteAddress ?? "unknown";
       let rate;
@@ -887,7 +900,7 @@ const server = createServer(async (req, res) => {
       if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
       if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
       problem(res, 400, "Batch failed", "The batch could not be processed. Ensure each item is between 2 and 20,000 characters.");
-    }
+    } finally { releaseCapacity(); }
     return;
   }
   if (req.method === "GET" && path === "/v1/alerts/waves") {
@@ -1047,6 +1060,10 @@ async function permitModeration(req: IncomingMessage, res: ServerResponse): Prom
 
 async function start(): Promise<void> {
   if (rateLimiter instanceof RedisRateLimiter) await rateLimiter.connect();
+  server.headersTimeout = 15_000;
+  server.requestTimeout = 30_000;
+  server.keepAliveTimeout = 5_000;
+  server.maxRequestsPerSocket = 1_000;
   server.listen(env.port, "0.0.0.0", () => logEvent("server_started", { port: env.port, shared_rate_limit: rateLimiter instanceof RedisRateLimiter }));
 }
 void start().catch(() => { logEvent("server_start_failed"); process.exitCode = 1; });

@@ -12,6 +12,7 @@ import type { ScanResult } from "../packages/risk-engine/src/types.js";
 import { assessRequestSchema, authLoginSchema, authRegisterSchema, batchScanRequestSchema, linkPreviewRequestSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "../apps/api/src/validation.js";
 import { MemoryAuthStore, hashPassword, normalizeEmail, verifyPassword } from "../apps/api/src/auth.js";
 import { calculateUsageEstimate } from "../apps/api/src/billing.js";
+import { ConcurrencyGate } from "../apps/api/src/capacity.js";
 import { canonicalPhone, domainOf, findOfficialChannel } from "../apps/api/src/directory.js";
 import { MemoryReputationStore, identifierKey, intelligenceFromSummaries, labelFor } from "../apps/api/src/reputation.js";
 import { CERTIFICATE_TTL_SECONDS, certificateCardHtml, issueCertificate, verifyCertificate } from "../apps/api/src/certificates.js";
@@ -210,6 +211,18 @@ test("billing estimates use published rates and ignore unknown meters", () => {
   assert.equal(incomplete.status, "incomplete_estimate");
   assert.equal(incomplete.total_minor, null);
   assert.deepEqual(incomplete.unpriced_metrics, ["deep_scan"]);
+});
+
+test("concurrency gate rejects overload and releases slots idempotently", () => {
+  const gate = new ConcurrencyGate(1);
+  const release = gate.tryAcquire();
+  assert.ok(release);
+  assert.equal(gate.inFlight, 1);
+  assert.equal(gate.tryAcquire(), null);
+  release();
+  release();
+  assert.equal(gate.inFlight, 0);
+  assert.ok(gate.tryAcquire());
 });
 
 test("official-channel directory normalises phones and domains and finds banks and telcos", () => {
