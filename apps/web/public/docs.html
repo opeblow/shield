@@ -159,8 +159,39 @@ const result = await response.json();
 
         <section id="voice">
           <h2>Voice verdicts</h2>
-          <p class="endpoint">POST <code>/v1/voice/speak</code> — text + Tier 1 language, returns <code>base64</code> audio.</p>
-          <pre class="code"><code>{ "text": "This is likely a scam. Do not send money or share codes.", "language": "pcm" }</code><button data-copy>Copy</button></pre>
+          <p class="endpoint">POST <code>/v1/voice/speak</code> — text + Tier 1 language + optional <code>provider</code>, returns <code>base64</code> audio.</p>
+          <pre class="code"><code>{ "text": "This is likely a scam. Do not send money or share codes.", "language": "pcm", "provider": "simulated" }</code><button data-copy>Copy</button></pre>
+          <p class="endpoint">GET <code>/v1/voice/providers</code> — lists the configured synthesis backends.</p>
+        </section>
+
+        <section id="preview">
+          <h2>Link preview</h2>
+          <p class="endpoint">POST <code>/v1/link-preview</code> — fetch a public URL through the SSRF-safe fetcher.</p>
+          <pre class="code"><code>{ "url": "https://secure.gtbank.com/app" }</code><button data-copy>Copy</button></pre>
+          <p class="endpoint">→ <code>{ "url": "…", "status": 200, "content_type": "text/html", "bytes": 2412, "truncated": false, "title": "…", "description": "…", "signals": [] }</code></p>
+          <p>Never executes page scripts or loads subresources; private and loopback hosts are rejected with <code>422</code>. Rate limited to 10/min per IP.</p>
+        </section>
+
+        <section id="batch">
+          <h2>Batch scan</h2>
+          <p class="endpoint">POST <code>/v1/batch/scan</code> — 1 to 25 messages in one call (anonymous or <code>X-Api-Key</code> with <code>scans:write</code>).</p>
+          <pre class="code"><code>{ "items": [
+  { "text": "Send your OTP now", "language": "en" },
+  { "text": "https://bit.ly/claim your prize" }
+] }</code><button data-copy>Copy</button></pre>
+          <p class="endpoint">→ <code>{ "count": 2, "results": [ { "verdict": "likely_scam", "risk_score": 58, "shield": { … } }, … ] }</code></p>
+        </section>
+
+        <section id="waves">
+          <h2>Fraud-wave alerts</h2>
+          <p class="endpoint">GET <code>/v1/alerts/waves</code> (session) — active and resolved waves from the last 48 hours.</p>
+          <p>When moderators verify several reports for the same identifier within 30 minutes, a wave fires (logged, webhook <code>fraud_wave.detected</code>, readable here). Use it to watch campaigns before the first tip-off card is issued.</p>
+        </section>
+
+        <section id="readiness">
+          <h2>Launch-readiness audit</h2>
+          <p class="endpoint">GET <code>/v1/ops/readiness</code> (session) — <code>{ "status": "ready|degraded", "checks": […], "recommendations": […] }</code></p>
+          <p>One probe across persistence, rate limiting, auth, speech, certificates, blind-index pepper, and TLS posture before you point a bank at the service.</p>
         </section>
 
         <section id="webhooks">
