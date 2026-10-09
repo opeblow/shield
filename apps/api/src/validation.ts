@@ -3,6 +3,10 @@ import { actions } from "../../../packages/risk-engine/src/policy.js";
 
 export const languageSchema = z.enum(["en", "pcm", "yo", "ha", "ig"]);
 
+const scamTypes = ["fake_credit_alert", "bank_impersonation", "phishing_link", "advance_fee", "investment_scam", "romance", "job_scam", "grant_refund", "pos_fraud", "sim_swap_social", "other"] as const;
+const verdicts = ["safe", "caution", "likely_scam", "scam"] as const;
+export const integrationScopes = ["scans:write", "lookup:read", "directory:read", "certificates:read"] as const;
+
 export const scanInputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: z.string().trim().min(2).max(20_000) }).strict(),
   z.object({ type: z.literal("url"), value: z.string().trim().min(3).max(2_048) }).strict(),
@@ -56,8 +60,30 @@ export const lookupRequestSchema = z.object({
 export const communityReportSchema = z.object({
   type: z.enum(["account", "phone", "url"]),
   value: z.string().trim().min(3).max(2_048),
-  scamType: z.enum(["fake_credit_alert", "bank_impersonation", "phishing_link", "advance_fee", "investment_scam", "romance", "job_scam", "grant_refund", "pos_fraud", "sim_swap_social", "other"]),
+  scamType: z.enum(scamTypes),
   evidence: z.string().trim().max(2_000).optional()
+}).strict();
+
+export const reputationReportSchema = communityReportSchema;
+
+export const decideReportSchema = z.object({ action: z.enum(["verify", "reject"]) }).strict();
+
+export const certificateRequestSchema = z.object({
+  verdict: z.enum(verdicts),
+  risk_score: z.number().int().min(0).max(100),
+  scam_types: z.array(z.enum(scamTypes)).max(12).optional(),
+  message: z.string().trim().min(2).max(20_000),
+  note: z.string().trim().max(500).optional()
+}).strict();
+
+export const integrationKeySchema = z.object({
+  name: z.string().trim().min(1).max(64),
+  scopes: z.array(z.enum(integrationScopes)).min(1).max(4)
+}).strict();
+
+export const verifyChannelSchema = z.object({
+  type: z.enum(["phone", "url"]),
+  value: z.string().trim().min(3).max(2_048)
 }).strict();
 
 export const moderateReportSchema = z.object({ action: z.enum(["verify", "reject"]) }).strict();
