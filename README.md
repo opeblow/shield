@@ -14,6 +14,10 @@
 </p>
 </div>
 
+<p align="center">
+<a href="docs/screenshots/shield-landing.png"><img src="docs/screenshots/shield-landing.png" alt="The Shield landing page" width="840" /></a>
+</p>
+
 Shield is a privacy-minded scanning service for suspicious messages. It applies explainable rules and, when configured, asks the OpenAI API for a structured assessment of redacted text. A result is a signal to verify through an official channel; it is never proof that a message is safe.
 
 Repository: [github.com/opeblow/shield](https://github.com/opeblow/shield)
