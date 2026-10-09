@@ -44,7 +44,19 @@ export const assessRequestSchema = z.object({
 
 export const voiceSpeakRequestSchema = z.object({
   text: z.string().trim().min(1).max(1_000),
-  language: languageSchema
+  language: languageSchema,
+  provider: z.string().trim().min(1).max(48).optional()
+}).strict();
+
+export const linkPreviewRequestSchema = z.object({
+  url: z.string().trim().min(4).max(2_048).regex(/^https?:\/\//i, "Provide an http(s) URL")
+}).strict();
+
+export const batchScanRequestSchema = z.object({
+  items: z.array(z.object({
+    text: z.string().trim().min(2).max(20_000),
+    language: languageSchema.optional()
+  })).min(1).max(25)
 }).strict();
 
 export const webhookRequestSchema = z.object({
