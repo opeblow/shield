@@ -209,7 +209,7 @@ test("stored scan summary omits submitted identifiers and evidence", async () =>
 
 test("production environment rejects development keys and invalid ports", () => {
   assert.throws(() => loadEnv({ NODE_ENV: "production" }), /Missing required production configuration/);
-  assert.throws(() => loadEnv({ NODE_ENV: "production", PORT: "3001", DATABASE_URL: "postgres://db", REDIS_URL: "redis://cache", OPENAI_API_KEY: "k", OPENAI_MODEL: "model", AUTH_SECRET: "a", FIELD_KEK: "development-only-key-change-me", BLIND_INDEX_PEPPER: "b", API_KEY_PEPPER: "c", COMMUNITY_MODERATION_TOKEN: "m".repeat(32) }), /Development KEK/);
+  assert.throws(() => loadEnv({ NODE_ENV: "production", PORT: "3001", DATABASE_URL: "postgres://db", REDIS_URL: "redis://cache", AUTH_SECRET: "a", CERTIFICATE_SECRET: "d", FIELD_KEK: "development-only-key-change-me", BLIND_INDEX_PEPPER: "b", API_KEY_PEPPER: "c", COMMUNITY_MODERATION_TOKEN: "m".repeat(32) }), /Development KEK/);
   assert.throws(() => loadEnv({ NODE_ENV: "development", PORT: "70000" }), /PORT/);
   assert.equal(loadEnv({ NODE_ENV: "development", PORT: "3001" }).port, 3001);
 });
