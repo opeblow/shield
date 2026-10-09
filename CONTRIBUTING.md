@@ -16,6 +16,8 @@ Requirements: Node.js 22 or newer and npm. No third-party account is needed for
 the local rules-based scanner.
 
 ```
+git clone https://github.com/opeblow/shield.git
+cd shield
 npm install
 cp .env.example .env      # PowerShell: Copy-Item .env.example .env
 npm run dev               # serves the API and PWA at http://localhost:3001
