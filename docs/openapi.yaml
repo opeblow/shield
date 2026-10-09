@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Shield Fraud-Defence API
-  version: 1.0.0
+  version: 0.1.0
   description: >
     Fraud-defence API for Nigerian consumer bank transfers. Scan text, URLs,
     QR payloads, phones and accounts; verify official bank/telco channels;
@@ -116,6 +116,24 @@ paths:
       summary: Revoke the current session and clear the cookie
       responses:
         "204": { description: Session revoked }
+  /v1/auth/sessions:
+    get:
+      tags: [Auth]
+      security:
+        - cookieAuth: []
+      summary: List active sessions for the signed-in account
+      responses:
+        "200": { description: Active sessions; current session is identified without exposing session tokens }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/auth/sessions/revoke-others:
+    post:
+      tags: [Auth]
+      security:
+        - cookieAuth: []
+      summary: Revoke every other session for the signed-in account
+      responses:
+        "204": { description: Other sessions revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /v1/scans:
     post:
       tags: [Scans]
@@ -249,7 +267,7 @@ paths:
                 url: { type: string, description: Must be HTTPS }
                 events:
                   type: array
-                  items: { type: string, enum: [scan.completed, report.verified, quota.threshold] }
+                  items: { type: string, enum: [scan.completed, assess.completed, fraud_wave.detected] }
       responses:
         "201":
           description: Webhook created; the signing secret is shown once
@@ -365,9 +383,11 @@ paths:
         - cookieAuth: []
       summary: Issue a verifiable check card for a scan
       description: >
-        Seals a verdict, score, scam types and the checked message into an
-        HMAC-signed token that independently verifies for 7 days. Useful for
-        sharing "I checked this" across chat apps without trusting screenshots.
+        Seals the stored verdict, score, scam types and redacted message of a
+        scan you ran while signed in into an HMAC-signed token that
+        independently verifies for 7 days. The verdict is taken from the
+        server-side scan record, never from the request, so a card can never
+        claim a scam message is safe. Scans expire after 48 hours.
       requestBody:
         required: true
         content:
@@ -381,6 +401,8 @@ paths:
               schema: { $ref: "#/components/schemas/CertificateIssued" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { description: Sign in to issue a check }
+        "403": { description: The scan was run by a different signed-in user }
+        "404": { description: Scan not found or older than 48 hours }
   /v1/certificates/{token}:
     get:
       tags: [Certificates]
@@ -806,7 +828,7 @@ components:
         customerScans: { type: integer, minimum: 0 }
         message: { type: string }
         language: { $ref: "#/components/schemas/Language" }
-        policy: { type: object, description: Optional policy override }
+        policy: { type: object, description: Development-only policy override; production rejects client-supplied policy }
     Assessment:
       type: object
       required: [action, risk_score]
@@ -998,12 +1020,12 @@ components:
         reputation: { $ref: "#/components/schemas/ReputationSummary" }
     CertificateRequest:
       type: object
-      required: [verdict, risk_score, message]
+      required: [scan_id]
       properties:
-        verdict: { type: string, enum: [safe, caution, likely_scam, scam] }
-        risk_score: { type: integer, minimum: 0, maximum: 100 }
-        scam_types: { type: array, items: { type: string } }
-        message: { type: string, maxLength: 2000 }
+        scan_id:
+          type: string
+          format: uuid
+          description: The scan_id of a scan you completed while signed in.
         note: { type: string, maxLength: 300 }
     CertificateIssued:
       type: object
