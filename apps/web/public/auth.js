@@ -10,6 +10,8 @@ const eyebrow = document.querySelector('#auth-eyebrow');
 const tabs = [...document.querySelectorAll('.auth-tab')];
 const params = new URLSearchParams(location.search);
 let mode = params.get('mode') === 'signin' ? 'signin' : 'signup';
+const nextTarget = params.get('next');
+const next = nextTarget && nextTarget.startsWith('/') ? nextTarget : null;
 
 const copy = {
   signup: {
@@ -66,7 +68,7 @@ form.addEventListener('submit', async (event) => {
       if (response.status === 409) { applyMode('signin'); }
       throw new Error(data.detail ?? 'Sign in could not be completed.');
     }
-    location.assign('/app');
+    location.assign(next ?? '/app');
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : 'Sign in could not be completed.';
   } finally {
