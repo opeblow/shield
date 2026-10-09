@@ -18,6 +18,22 @@
 <a href="docs/screenshots/shield-landing.png"><img src="docs/screenshots/shield-landing.png" alt="The Shield landing page" width="840" /></a>
 </p>
 
+### Sign in
+
+<p align="center">
+<a href="docs/screenshots/shield-signin.png"><img src="docs/screenshots/shield-signin.png" alt="The Shield sign-in page" width="840" /></a>
+</p>
+
+Have an account already? The **Sign in** page takes your email and password, verifies them, and opens a secure session that keeps the scanner private to you.
+
+### Get started
+
+<p align="center">
+<a href="docs/screenshots/shield-get-started.png"><img src="docs/screenshots/shield-get-started.png" alt="The Shield get started page" width="840" /></a>
+</p>
+
+New here? The **Get started** (Create account) page sets up your Shield account. Pick a password of at least 8 characters; it is stored only as a hash, never in plain text.
+
 Shield is a privacy-minded scanning service for suspicious messages. It applies explainable rules and, when configured, asks the OpenAI API for a structured assessment of redacted text. A result is a signal to verify through an official channel; it is never proof that a message is safe.
 
 Repository: [github.com/opeblow/shield](https://github.com/opeblow/shield)
