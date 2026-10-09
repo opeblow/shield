@@ -580,6 +580,105 @@ paths:
               schema: { $ref: "#/components/schemas/Speech" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "429": { description: Rate limited }
+  /v1/voice/providers:
+    get:
+      tags: [Voice]
+      security: []
+      summary: List speech providers and the default synthesis backend
+      responses:
+        "200":
+          description: Provider names and the default
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SpeechProviders" }
+  /v1/link-preview:
+    post:
+      tags: [Scans]
+      security: []
+      summary: Previews a URL through the SSRF-safe fetcher without executing anything
+      description: >
+        Fetches a public http(s) URL with a bounded body, returns status, size,
+        HTML title/meta description, and the URL's scam signals. Never runs
+        page scripts or loads subresources. Private/loopback hosts are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LinkPreviewRequest" }
+      responses:
+        "200":
+          description: A bounded preview of the fetched page
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LinkPreview" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { description: Unsafe URL (non-public host)" content: { application/json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "429": { description: Rate limited }
+  /v1/batch/scan:
+    post:
+      tags: [Scans]
+      security: []
+      summary: Scans 1 to 25 messages in one call
+      description: >
+        Accepts anonymous or integration-key (scans:write) callers; each item
+        is scanned with the same rule + reputation engine as /v1/scans and
+        returned with its shield context. No stream or persist step.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchScanRequest" }
+      responses:
+        "200":
+          description: One result per item, in order
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchScanResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { description: No session and the integration key is missing or lacks scans:write }
+        "429": { description: Rate limited }
+  /v1/alerts/waves:
+    get:
+      tags: [Reports]
+      summary: Recent fraud-wave alerts from verified-report surges
+      description: >
+        Active and resolved waves detected when moderators verify several
+        reports for the same identifier inside 30 minutes. Requires a session.
+      responses:
+        "200":
+          description: Waves seen in the last 48 hours
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WavesResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/ops/readiness:
+    get:
+      tags: [Ops]
+      summary: Launch-readiness audit of every subsystem
+      description: >
+        Evaluates persistence, rate limiting, auth, speech, certificates,
+        blind-index pepper and TLS posture; returns a ready/degraded status
+        with actionable recommendations. Requires a session.
+      responses:
+        "200":
+          description: Audit result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/session:
+    get:
+      tags: [Auth]
+      security: []
+      summary: Returns the signed-in user or 401
+      description: Lightweight session check used by share-target pages to decide whether to forward to /app.
+      responses:
+        "200":
+          description: Signed in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, description: Tenant API key }
@@ -730,7 +829,90 @@ components:
         language: { $ref: "#/components/schemas/Language" }
         mime_type: { type: string }
         audio_base64: { type: string }
-        provider: { type: string }
+        provider: { type: string, description: Backend used (e.g. simulated, openai) }
+    SpeechProviders:
+      type: object
+      properties:
+        providers: { type: array, items: { type: string } }
+        default: { type: string }
+    LinkPreviewRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri, description: Public http(s) URL to preview }
+    LinkPreview:
+      type: object
+      properties:
+        url: { type: string, description: Final URL after redirects }
+        status: { type: integer }
+        content_type: { type: string }
+        bytes: { type: integer }
+        truncated: { type: boolean }
+        title: { type: [string, "null"] }
+        description: { type: [string, "null"] }
+        signals:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              text: { type: string }
+              evidence: { type: string }
+    BatchScanRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 25
+          items:
+            type: object
+            required: [text]
+            properties:
+              text: { type: string, minLength: 2, maxLength: 20000 }
+              language: { $ref: "#/components/schemas/Language" }
+    BatchScanResponse:
+      type: object
+      properties:
+        count: { type: integer }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              verdict: { type: string }
+              risk_score: { type: integer }
+              reasons: { type: array, items: { type: string } }
+              shield: { $ref: "#/components/schemas/Shield" }
+    WaveAlert:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [account, phone, url] }
+        label: { type: string, description: Display-safe identifier label (after blinding) }
+        count: { type: integer, description: Verified reports inside the 30-minute window }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+        status: { type: string, enum: [active, resolved] }
+    WavesResponse:
+      type: object
+      properties:
+        waves: { type: array, items: { $ref: "#/components/schemas/WaveAlert" } }
+    ReadinessReport:
+      type: object
+      properties:
+        status: { type: string, enum: [ready, degraded] }
+        checked_at: { type: string, format: date-time }
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              ok: { type: boolean }
+              detail: { type: string }
+        recommendations: { type: array, items: { type: string } }
     ReputationSummary:
       type: object
       required: [kind, reports, verified, pending]
