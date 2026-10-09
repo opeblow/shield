@@ -63,6 +63,87 @@ function verdictLabel(verdict) {
   return ({ safe: 'No scam signs found', caution: 'Pause and check', likely_scam: 'Likely scam', scam: 'Strong scam signs' })[verdict] ?? 'Scan result';
 }
 
+function appendShieldContext(container, shield) {
+  if (!shield) return;
+  const reputation = shield.reputation ?? [];
+  const channels = shield.official_channels ?? [];
+  if (!reputation.length && !channels.length) return;
+  const heading = document.createElement('h4');
+  heading.textContent = 'Shared intelligence';
+  container.append(heading);
+  if (!reputation.length && !channels.filter((channel) => channel.status === 'found').length) {
+    const note = document.createElement('p');
+    note.className = 'score';
+    note.textContent = 'No community reports yet for this number or account. Pause before trusting a stranger with money or codes.';
+    container.append(note);
+  }
+  const list = document.createElement('ul');
+  for (const item of reputation) {
+    const line = document.createElement('li');
+    const verified = item.verified ?? 0;
+    const pending = item.pending ?? 0;
+    const detail = verified ? `${verified} verified report${verified === 1 ? '' : 's'}` : `${item.reports} report${item.reports === 1 ? '' : 's'}`;
+    const extra = pending ? ` (${pending} pending review)` : '';
+    line.textContent = `${item.kind}: ${item.value} — ${detail}${extra}`;
+    list.append(line);
+  }
+  for (const channel of channels) {
+    const line = document.createElement('li');
+    if (channel.status === 'found') {
+      line.textContent = `${channel.value} appears to be an official ${channel.name} channel.`;
+    } else if (channel.status === 'ambiguous') {
+      line.textContent = `${channel.value} is not a confirmed official channel. Treat it as unverified.`;
+    } else {
+      line.textContent = `${channel.value} is not listed as an official channel. Treat it as unverified.`;
+    }
+    list.append(line);
+  }
+  container.append(list);
+}
+
+function appendCertificateAction(container, data) {
+  const wrap = document.createElement('div');
+  wrap.className = 'certificate-action';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'btn btn-secondary';
+  button.textContent = 'Create a verifiable check card';
+  const note = document.createElement('p');
+  note.className = 'score';
+  note.setAttribute('role', 'status');
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    button.textContent = 'Signing your check…';
+    try {
+      const response = await fetch('/v1/certificates', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          verdict: data.verdict,
+          risk_score: data.risk_score ?? 0,
+          scam_types: data.scam_types ?? [],
+          message: data.customer_message?.text ?? message.value
+        })
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? 'The check could not be signed.');
+      const link = document.createElement('a');
+      link.href = body.card_url;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = 'Open your verifiable check card';
+      note.replaceChildren(link);
+      button.textContent = 'Create a verifiable check card';
+      button.disabled = true;
+    } catch (error) {
+      button.textContent = 'Create a verifiable check card';
+      button.disabled = false;
+      note.textContent = error instanceof Error ? error.message : 'The check could not be signed.';
+    }
+  });
+  wrap.append(button, note);
+  container.append(wrap);
+}
+
 button.addEventListener('click', async () => {
   if (message.value.trim().length < 2) {
     message.focus();
@@ -110,6 +191,8 @@ button.addEventListener('click', async () => {
       }
       result.append(list);
     }
+    appendShieldContext(result, data.shield);
+    appendCertificateAction(result, data);
     result.hidden = false;
     reportSection.hidden = !communityReportAvailable;
   } catch (error) {
@@ -132,7 +215,7 @@ reportForm.addEventListener('submit', async (event) => {
   reportSubmit.disabled = true;
   reportStatus.textContent = 'Sending your report securely…';
   try {
-    const response = await fetch('/v1/reports', {
+    const response = await fetch('/v1/reputation/reports', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         type: document.querySelector('#report-type').value,
