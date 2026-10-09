@@ -16,22 +16,32 @@ import { SimulatedSpeechProvider, OpenAiSpeechProvider, type SpeechProvider } fr
 import { ScanRepository } from "./repository.js";
 import { ScanJobRegistry } from "./jobs.js";
 import { redactSensitive } from "../../../packages/shared/src/redaction.js";
-import { assessRequestSchema, communityReportSchema, lookupRequestSchema, moderateReportSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "./validation.js";
+import { assessRequestSchema, authLoginSchema, authRegisterSchema, communityReportSchema, lookupRequestSchema, moderateReportSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "./validation.js";
+import { MemoryAuthStore, PgAuthStore, hashPassword, normalizeEmail, verifyPassword, type AuthStore } from "./auth.js";
 import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./rate-limit.js";
 
 const env = loadEnv();
 const provider = new OpenAiProvider(env.openAiKey, env.openAiModel);
 const repository = env.databaseUrl ? new ScanRepository(env.databaseUrl) : undefined;
+const authStore: AuthStore = env.databaseUrl ? new PgAuthStore(env.databaseUrl) : new MemoryAuthStore();
+const authSecret = Buffer.from(env.authSecret ?? "development-only-auth-secret-change-me");
+const SESSION_COOKIE = "shield_session";
+const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const limit = 64 * 1024;
 const webRoot = resolve(process.cwd(), "apps/web/public");
 const staticFiles: Record<string, { file: string; type: string }> = {
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
   "/index.html": { file: "index.html", type: "text/html; charset=utf-8" },
+  "/landing.js": { file: "landing.js", type: "text/javascript; charset=utf-8" },
+  "/auth": { file: "auth.html", type: "text/html; charset=utf-8" },
+  "/auth.html": { file: "auth.html", type: "text/html; charset=utf-8" },
+  "/auth.js": { file: "auth.js", type: "text/javascript; charset=utf-8" },
   "/recovery": { file: "recovery.html", type: "text/html; charset=utf-8" },
   "/recovery.html": { file: "recovery.html", type: "text/html; charset=utf-8" },
   "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
   "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
   "/qr.js": { file: "qr.js", type: "text/javascript; charset=utf-8" },
+  "/snippet.js": { file: "snippet.js", type: "text/javascript; charset=utf-8" },
   "/recovery.js": { file: "recovery.js", type: "text/javascript; charset=utf-8" },
   "/data/recovery.json": { file: "data/recovery.json", type: "application/json; charset=utf-8" },
   "/sw.js": { file: "sw.js", type: "text/javascript; charset=utf-8" },
@@ -77,6 +87,18 @@ const server = createServer(async (req, res) => {
   res.setHeader("x-frame-options", "DENY");
   res.setHeader("content-security-policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
   res.setHeader("strict-transport-security", "max-age=63072000; includeSubDomains; preload");
+  if (req.method === "GET" && (path === "/app" || path === "/app.html")) {
+    const session = await currentSession(req);
+    if (!session) { res.writeHead(302, { location: "/auth", "cache-control": "no-store" }); res.end(); return; }
+    try {
+      const contents = await readFile(resolve(webRoot, "app.html"));
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(contents);
+    } catch {
+      problem(res, 503, "App unavailable", "The web application assets are unavailable.");
+    }
+    return;
+  }
   if (req.method === "GET" && staticFiles[path]) {
     try {
       const asset = staticFiles[path]!;
@@ -95,6 +117,56 @@ const server = createServer(async (req, res) => {
     res.writeHead(ready ? 200 : 503, { "content-type": "application/json" });
     const communityReports = databaseReady && Boolean(env.blindPepper && env.apiKeyPepper && env.fieldKek && env.communityModerationToken);
     res.end(JSON.stringify({ ready, persistence: databaseReady ? "postgres" : "unavailable", rate_limit: rateLimiter instanceof RedisRateLimiter ? "redis" : "process_local", scan_mode: env.openAiKey && env.openAiModel ? "rules+openai" : "rules-only", community_reports: communityReports }));
+    return;
+  }
+  if (req.method === "POST" && (path === "/v1/auth/register" || path === "/v1/auth/login")) {
+    try {
+      const address = req.socket.remoteAddress ?? "unknown";
+      let rate;
+      try { rate = await rateLimiter.consume(`${address}:auth`, 30, 60_000); }
+      catch { problem(res, 503, "Authentication unavailable", "Sign in is temporarily unavailable."); return; }
+      if (!rate.allowed) { problem(res, 429, "Rate limit exceeded", `Please retry in ${Math.ceil(rate.retryAfterMs / 1000)} seconds.`); return; }
+      if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
+      const isRegister = path === "/v1/auth/register";
+      const validated = (isRegister ? authRegisterSchema : authLoginSchema).safeParse(await readJson(req));
+      if (!validated.success) { problem(res, 400, "Invalid credentials", isRegister ? "Enter a valid email and a password of at least 8 characters." : "Enter your email and password."); return; }
+      const email = normalizeEmail(validated.data.email);
+      const password = validated.data.password;
+      let account;
+      if (isRegister) {
+        const created = await authStore.createAccount(email, await hashPassword(password));
+        if (!created) { problem(res, 409, "Account exists", "An account with this email already exists. Try signing in instead."); return; }
+        account = created;
+      } else {
+        const record = await authStore.findAccount(email);
+        const valid = record ? await verifyPassword(password, record.passwordHash) : false;
+        if (!record || !valid) { problem(res, 401, "Incorrect credentials", "The email or password is incorrect."); return; }
+        account = record.account;
+      }
+      const token = generateOpaqueToken(32);
+      await authStore.createSession({ userId: account.id, email: account.email, tokenHash: hashSecret(token, authSecret), expiresAt: new Date(Date.now() + SESSION_TTL_SECONDS * 1000) });
+      res.writeHead(isRegister ? 201 : 200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "set-cookie": sessionCookie(token) });
+      res.end(JSON.stringify({ user: { email: account.email } }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "auth_failed";
+      if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
+      if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
+      problem(res, 503, "Authentication unavailable", "Sign in could not be completed. Please retry shortly.");
+    }
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/auth/logout") {
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (token) { try { await authStore.revokeSession(hashSecret(token, authSecret)); } catch { /* best effort */ } }
+    res.writeHead(204, { "cache-control": "no-store", "set-cookie": clearedSessionCookie() });
+    res.end();
+    return;
+  }
+  if (req.method === "GET" && path === "/v1/auth/me") {
+    const session = await currentSession(req);
+    if (!session) { problem(res, 401, "Unauthorized", "Sign in to continue."); return; }
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    res.end(JSON.stringify({ user: { email: session.email } }));
     return;
   }
   if (req.method === "POST" && path === "/v1/lookup") {
@@ -380,6 +452,40 @@ const server = createServer(async (req, res) => {
 
 type TenantAuth = { status: "anonymous" } | { status: "ok"; tenantId: string } | { status: "error"; code: number; detail: string };
 
+function parseCookies(req: IncomingMessage): Record<string, string> {
+  const header = req.headers.cookie;
+  if (!header) return {};
+  const out: Record<string, string> = {};
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    const key = part.slice(0, eq).trim();
+    if (!key) continue;
+    try { out[key] = decodeURIComponent(part.slice(eq + 1).trim()); } catch { out[key] = part.slice(eq + 1).trim(); }
+  }
+  return out;
+}
+
+function sessionCookie(token: string): string {
+  const secure = env.nodeEnv === "production" ? "; Secure" : "";
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}${secure}`;
+}
+
+function clearedSessionCookie(): string {
+  const secure = env.nodeEnv === "production" ? "; Secure" : "";
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+}
+
+async function currentSession(req: IncomingMessage): Promise<{ email: string } | null> {
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (!token) return null;
+  try {
+    const record = await authStore.findSession(hashSecret(token, authSecret));
+    if (!record || record.revokedAt || record.expiresAt.getTime() <= Date.now()) return null;
+    return { email: record.email };
+  } catch { return null; }
+}
+
 async function resolveTenant(req: IncomingMessage, scope: string): Promise<TenantAuth> {
   const authorization = req.headers.authorization;
   if (!authorization) return { status: "anonymous" };
@@ -435,7 +541,7 @@ void start().catch(() => { logEvent("server_start_failed"); process.exitCode = 1
 
 function shutdown(): void {
   server.close(() => {
-    void Promise.all([repository?.close(), rateLimiter.close()]).finally(() => process.exit(0));
+    void Promise.all([repository?.close(), authStore.close(), rateLimiter.close()]).finally(() => process.exit(0));
   });
 }
 process.on("SIGINT", shutdown);
