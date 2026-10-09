@@ -14,6 +14,7 @@ import { generateOpaqueToken, hashSecret, keyringFromEnv, verifySecret } from ".
 import { deliverWebhook } from "../../../packages/shared/src/webhooks.js";
 import { SimulatedSpeechProvider, OpenAiSpeechProvider, SpeechProviderRegistry } from "../../../packages/channels/src/voice.js";
 import { ScanRepository } from "./repository.js";
+import { MemoryScanRecordStore, PgScanRecordStore, type ScanRecordStore } from "./scan-records.js";
 import { ScanJobRegistry } from "./jobs.js";
 import { redactSensitive } from "../../../packages/shared/src/redaction.js";
 import { assessRequestSchema, authLoginSchema, authRegisterSchema, batchScanRequestSchema, certificateRequestSchema, communityReportSchema, decideReportSchema, integrationKeySchema, linkPreviewRequestSchema, lookupRequestSchema, moderateReportSchema, reputationReportSchema, scanRequestSchema, verifyChannelSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "./validation.js";
@@ -22,7 +23,7 @@ import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./rate-li
 import { findOfficialChannel } from "./directory.js";
 import { MemoryReputationStore, PgReputationStore, type ReputationStore } from "./reputation.js";
 import { MemoryIntegrationKeyStore, PgIntegrationKeyStore, type IntegrationKeyStore, type IntegrationScope } from "./integration.js";
-import { issueCertificate, verifyCertificate, certificateCardHtml, CERTIFICATE_TTL_SECONDS } from "./certificates.js";
+import { issueCertificate, verifyCertificate, certificateCardHtml, CERTIFICATE_TTL_SECONDS, type Verdict as CertificateVerdict } from "./certificates.js";
 import { buildShieldContext, lookupIntelligence } from "./context.js";
 import { validateArtifact } from "./ingestion.js";
 import { previewUrl } from "./preview.js";
@@ -37,6 +38,8 @@ const reputationStore: ReputationStore = env.databaseUrl
   : new MemoryReputationStore(env.blindPepper ? Buffer.from(env.blindPepper) : undefined);
 const integrationKeyStore: IntegrationKeyStore = env.databaseUrl ? new PgIntegrationKeyStore(env.databaseUrl) : new MemoryIntegrationKeyStore();
 const authSecret = Buffer.from(env.authSecret ?? "development-only-auth-secret-change-me");
+const certificateSecret = Buffer.from(env.certificateSecret ?? env.authSecret ?? "development-only-certificate-secret-change-me");
+const scanRecordStore: ScanRecordStore = env.databaseUrl ? new PgScanRecordStore(env.databaseUrl) : new MemoryScanRecordStore();
 const SESSION_COOKIE = "shield_session";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const limit = 64 * 1024;
@@ -120,6 +123,22 @@ async function readRaw(req: IncomingMessage, maxBytes: number): Promise<Uint8Arr
   return Buffer.concat(chunks);
 }
 
+async function rememberScan(scanId: string, result: ScanResult, sourceText: string, ownerId: string | null, tenantId: string | null): Promise<void> {
+  try {
+    await scanRecordStore.save({
+      scanId,
+      ownerId,
+      tenantId,
+      verdict: result.verdict,
+      riskScore: result.risk_score,
+      scamTypes: result.scam_types,
+      language: result.customer_message.language,
+      redactedText: redactSensitive(sourceText).text,
+      createdAt: new Date().toISOString()
+    });
+  } catch { logEvent("scan_record_failed", { scanId }); }
+}
+
 const server = createServer(async (req, res) => {
   const requestId = randomUUID();
   const startedAt = performance.now();
@@ -131,6 +150,20 @@ const server = createServer(async (req, res) => {
   res.setHeader("x-frame-options", "DENY");
   res.setHeader("content-security-policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
   res.setHeader("strict-transport-security", "max-age=63072000; includeSubDomains; preload");
+  const method = req.method ?? "GET";
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    const cookies = parseCookies(req);
+    const rawOrigin = req.headers.origin ?? (typeof req.headers.referer === "string" ? req.headers.referer : undefined);
+    const hasApiCredential = Boolean(req.headers.authorization || req.headers["x-api-key"]);
+    if (cookies[SESSION_COOKIE] && !hasApiCredential) {
+      let originHost: string | null = null;
+      try { originHost = new URL(rawOrigin ?? "").host; } catch { originHost = null; }
+      if (!originHost || originHost !== req.headers.host) {
+        problem(res, 403, "Cross-site request blocked", "Signed-in changes must be made from the Shield site itself.");
+        return;
+      }
+    }
+  }
   if (req.method === "GET" && (path === "/app" || path === "/app.html" || path === "/integrations" || path === "/integrations.html")) {
     const session = await currentSession(req);
     if (!session) { res.writeHead(302, { location: "/auth", "cache-control": "no-store" }); res.end(); return; }
@@ -174,7 +207,7 @@ const server = createServer(async (req, res) => {
       if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
       const isRegister = path === "/v1/auth/register";
       const validated = (isRegister ? authRegisterSchema : authLoginSchema).safeParse(await readJson(req));
-      if (!validated.success) { problem(res, 400, "Invalid credentials", isRegister ? "Enter a valid email and a password of at least 8 characters." : "Enter your email and password."); return; }
+      if (!validated.success) { problem(res, 400, "Invalid credentials", isRegister ? "Enter a valid email and a password of at least 12 characters." : "Enter your email and password."); return; }
       const email = normalizeEmail(validated.data.email);
       const password = validated.data.password;
       let account;
@@ -219,6 +252,28 @@ const server = createServer(async (req, res) => {
     if (!session) { problem(res, 401, "Unauthorized", "Not signed in."); return; }
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     res.end(JSON.stringify({ user: { email: session.email } }));
+    return;
+  }
+  if (req.method === "GET" && path === "/v1/auth/sessions") {
+    const session = await currentSession(req);
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (!session || !token) { problem(res, 401, "Unauthorized", "Sign in to continue."); return; }
+    try {
+      const sessions = await authStore.listSessions(session.userId, hashSecret(token, authSecret));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ sessions }));
+    } catch { problem(res, 503, "Sessions unavailable", "Sessions could not be listed safely."); }
+    return;
+  }
+  if (req.method === "POST" && path === "/v1/auth/sessions/revoke-others") {
+    const session = await currentSession(req);
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (!session || !token) { problem(res, 401, "Unauthorized", "Sign in to continue."); return; }
+    try {
+      await authStore.revokeOtherSessions(session.userId, hashSecret(token, authSecret));
+      res.writeHead(204, { "cache-control": "no-store" });
+      res.end();
+    } catch { problem(res, 503, "Sessions unavailable", "Other sessions could not be revoked safely."); }
     return;
   }
   if (req.method === "POST" && path === "/v1/reputation/reports") {
@@ -295,24 +350,32 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === "POST" && path === "/v1/certificates") {
     try {
-      if (!await requireSession(req, res)) return;
+      const session = await currentSession(req);
+      if (!session) { problem(res, 401, "Unauthorized", "Sign in to continue."); return; }
+      const address = req.socket.remoteAddress ?? "unknown";
+      let rate;
+      try { rate = await rateLimiter.consume(`${address}:certificate`, 10, 60_000); }
+      catch { problem(res, 503, "Rate limiting unavailable", "Check card issuance is temporarily unavailable."); return; }
+      if (!rate.allowed) { problem(res, 429, "Rate limit exceeded", `Please retry in ${Math.ceil(rate.retryAfterMs / 1000)} seconds.`); return; }
       if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
       const validated = certificateRequestSchema.safeParse(await readJson(req));
-      if (!validated.success) { problem(res, 400, "Invalid certificate request", "Provide a verdict, risk score, and the checked message."); return; }
-      const data = validated.data;
+      if (!validated.success) { problem(res, 400, "Invalid certificate request", "Provide the scan_id of a scan you completed while signed in."); return; }
+      const record = await scanRecordStore.get(validated.data.scan_id);
+      if (!record) { problem(res, 404, "Scan not found", "Check cards can only be sealed from a scan you ran while signed in, and scans expire after 48 hours."); return; }
+      if (record.ownerId !== session.userId) { problem(res, 403, "Scan not yours", "You can only seal a check card for a scan you ran yourself."); return; }
       const token = issueCertificate({
-        scanId: randomUUID(),
-        verdict: data.verdict,
-        riskScore: data.risk_score,
-        scamTypes: data.scam_types ?? [],
-        message: data.message,
+        scanId: record.scanId,
+        verdict: record.verdict as CertificateVerdict,
+        riskScore: record.riskScore,
+        scamTypes: record.scamTypes,
+        message: record.redactedText,
         issuer: "Shield",
-        secret: authSecret,
-        ...(data.note ? { note: data.note } : {})
+        secret: certificateSecret,
+        ...(validated.data.note ? { note: validated.data.note } : {})
       });
       const verifiedUntil = new Date(Date.now() + CERTIFICATE_TTL_SECONDS * 1000).toISOString();
       res.writeHead(201, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      res.end(JSON.stringify({ certificate_id: verifyCertificate(token, authSecret)?.certificate_id, card_url: `/c/${token}`, verify_url: `/v1/certificates/${token}`, verified_until: verifiedUntil }));
+      res.end(JSON.stringify({ certificate_id: verifyCertificate(token, certificateSecret)?.certificate_id, card_url: `/c/${token}`, verify_url: `/v1/certificates/${token}`, verified_until: verifiedUntil }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "certificate_failed";
       if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
@@ -323,7 +386,7 @@ const server = createServer(async (req, res) => {
   }
   const certificateVerifyMatch = /^\/v1\/certificates\/(.+)$/.exec(path);
   if (req.method === "GET" && certificateVerifyMatch) {
-    const payload = verifyCertificate(certificateVerifyMatch[1]!, authSecret);
+    const payload = verifyCertificate(certificateVerifyMatch[1]!, certificateSecret);
     if (!payload) { problem(res, 400, "Certificate invalid", "This check card could not be verified or has expired."); return; }
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     res.end(JSON.stringify({ valid: true, certificate: payload }));
@@ -331,7 +394,7 @@ const server = createServer(async (req, res) => {
   }
   const certificateCardMatch = /^\/c\/(.+)$/.exec(path);
   if (req.method === "GET" && certificateCardMatch) {
-    const payload = verifyCertificate(certificateCardMatch[1]!, authSecret);
+    const payload = verifyCertificate(certificateCardMatch[1]!, certificateSecret);
     res.setHeader("content-security-policy", "default-src 'self'; script-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     res.setHeader("cache-control", "no-store");
     if (!payload) {
@@ -453,7 +516,7 @@ const server = createServer(async (req, res) => {
   if (req.method === "GET" && integrationCertificateMatch) {
     const auth = await resolveIntegration(req, "certificates:read");
     if (auth.status !== "ok") { problem(res, auth.code, "Unauthorized", auth.detail); return; }
-    const payload = verifyCertificate(integrationCertificateMatch[1]!, authSecret);
+    const payload = verifyCertificate(integrationCertificateMatch[1]!, certificateSecret);
     if (!payload) { problem(res, 400, "Certificate invalid", "This check card could not be verified or has expired."); return; }
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     res.end(JSON.stringify({ valid: true, certificate: payload }));
@@ -559,6 +622,7 @@ const server = createServer(async (req, res) => {
       if (!validated.success) { problem(res, 400, "Invalid request", "Provide valid transaction context fields."); return; }
       const data = validated.data;
       let resolvedPolicy;
+      if (data.policy && env.nodeEnv === "production") { problem(res, 400, "Client policy rejected", "Production assessment policies must be configured by the tenant, not supplied with a request."); return; }
       if (data.policy) { try { resolvedPolicy = normalizePolicy(data.policy); } catch { problem(res, 400, "Invalid policy", "Policy bands must be unique and within 0 to 100."); return; } }
       const assessment = await assessTransaction({
         ...(data.amount !== undefined ? { amount: data.amount } : {}),
@@ -684,6 +748,7 @@ const server = createServer(async (req, res) => {
       const auth = await resolveTenant(req, "scans:write");
       if (auth.status === "error") { problem(res, auth.code, "Unauthorized", auth.detail); return; }
       const tenantId = auth.status === "ok" ? auth.tenantId : null;
+      const scanSession = await currentSession(req);
       if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
       const validated = scanRequestSchema.safeParse(await readJson(req));
       if (!validated.success) { problem(res, 400, "Invalid request", "Provide text or combined inputs, an optional Tier 1 language, and mode fast or deep."); return; }
@@ -709,6 +774,7 @@ const server = createServer(async (req, res) => {
           try { await repository.save(fast, redactSensitive(sourceText).text, tenantId); }
           catch { problem(res, 503, "Storage unavailable", "The scan could not be safely saved. Please retry shortly."); return; }
         } else if (env.nodeEnv === "production") { problem(res, 503, "Storage unavailable", "Scanning is temporarily unavailable."); return; }
+        await rememberScan(scanId, fast, sourceText, scanSession?.userId ?? null, tenantId);
         if (tenantId && repository) { try { await repository.recordUsage(tenantId, "scan"); } catch { logEvent("usage_record_failed", { metric: "scan" }); } }
         void (async () => {
           try {
@@ -734,6 +800,7 @@ const server = createServer(async (req, res) => {
         problem(res, 503, "Storage unavailable", "Scanning is temporarily unavailable.");
         return;
       }
+      await rememberScan(scanId, result, sourceText, scanSession?.userId ?? null, tenantId);
       if (tenantId && repository) { try { await repository.recordUsage(tenantId, "scan"); } catch { logEvent("usage_record_failed", { metric: "scan" }); } }
       void dispatchWebhookEvent(tenantId, "scan.completed", result);
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -778,6 +845,8 @@ const server = createServer(async (req, res) => {
       if (!rate.allowed) { problem(res, 429, "Rate limit exceeded", `Please retry in ${Math.ceil(rate.retryAfterMs / 1000)} seconds.`); return; }
       const integration = await resolveIntegration(req, "scans:write");
       if (integration.status === "error" && req.headers["x-api-key"]) { problem(res, 401, "Unauthorized", "The X-Api-Key is invalid or lacks scans:write."); return; }
+      const batchSession = await currentSession(req);
+      const batchTenantId = integration.status === "ok" ? integration.tenantId : null;
       if (!req.headers["content-type"]?.includes("application/json")) { problem(res, 415, "Unsupported Media Type", "Send a JSON request."); return; }
       const validated = batchScanRequestSchema.safeParse(await readJson(req));
       if (!validated.success) { problem(res, 400, "Invalid request", "Send 1 to 25 items, each with text (and an optional language) between 2 and 20,000 characters."); return; }
@@ -790,6 +859,7 @@ const server = createServer(async (req, res) => {
           lookup: async (entities) => lookupIntelligence(entities, reputationStore)
         });
         const shield = await buildShieldContext({ text: item.text }, reputationStore);
+        await rememberScan(scanId, result, item.text, batchSession?.userId ?? null, batchTenantId);
         results.push({ ...result, shield });
       }
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -822,7 +892,7 @@ const server = createServer(async (req, res) => {
     else { checks.push({ name: "rate_limiter", ok: env.nodeEnv !== "production", detail: "process_local" }); }
     checks.push({ name: "auth", ok: true, detail: "registration and session authentication" });
     checks.push({ name: "speech", ok: speechConfigured || env.nodeEnv !== "production", detail: speechConfigured ? `${speechRegistry.names().length} providers` : "simulated only" });
-    checks.push({ name: "certificates", ok: authSecret.length >= 32, detail: `shares sealed for ${CERTIFICATE_TTL_SECONDS}s` });
+    checks.push({ name: "certificates", ok: certificateSecret.length >= 32, detail: env.certificateSecret ? `dedicated key, sealed for ${CERTIFICATE_TTL_SECONDS}s` : `shares AUTH_SECRET — set CERTIFICATE_SECRET, sealed for ${CERTIFICATE_TTL_SECONDS}s` });
     checks.push({ name: "blind_pepper", ok: Boolean(env.blindPepper), detail: env.blindPepper ? "identifier hashing active" : "missing" });
     checks.push({ name: "tls_termination", ok: true, detail: env.nodeEnv === "production" ? "terminate TLS at the load balancer" : "development" });
     checks.push({ name: "build", ok: true, detail: `process.version ${process.version}` });
@@ -883,13 +953,13 @@ function clearedSessionCookie(): string {
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
 }
 
-async function currentSession(req: IncomingMessage): Promise<{ email: string } | null> {
+async function currentSession(req: IncomingMessage): Promise<{ userId: string; email: string } | null> {
   const token = parseCookies(req)[SESSION_COOKIE];
   if (!token) return null;
   try {
     const record = await authStore.findSession(hashSecret(token, authSecret));
     if (!record || record.revokedAt || record.expiresAt.getTime() <= Date.now()) return null;
-    return { email: record.email };
+    return { userId: record.userId, email: record.email };
   } catch { return null; }
 }
 
@@ -966,7 +1036,7 @@ void start().catch(() => { logEvent("server_start_failed"); process.exitCode = 1
 function shutdown(): void {
   clearInterval(waveTicker);
   server.close(() => {
-    void Promise.all([repository?.close(), authStore.close(), rateLimiter.close(), reputationStore.close(), integrationKeyStore.close(), waveStore.close()]).finally(() => process.exit(0));
+    void Promise.all([repository?.close(), authStore.close(), rateLimiter.close(), reputationStore.close(), integrationKeyStore.close(), waveStore.close(), scanRecordStore.close()]).finally(() => process.exit(0));
   });
 }
 process.on("SIGINT", shutdown);

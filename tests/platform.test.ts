@@ -170,10 +170,17 @@ test("in-memory auth store handles sign-up, session lookup, and sign-out", async
   assert.equal(found.passwordHash, "hash");
   const expiresAt = new Date(Date.now() + 60_000);
   await store.createSession({ userId: account.id, email: account.email, tokenHash: "tok", expiresAt });
+  await store.createSession({ userId: account.id, email: account.email, tokenHash: "other", expiresAt });
   const session = await store.findSession("tok");
   assert.ok(session);
   assert.equal(session.email, "ada@example.com");
   assert.equal(session.revokedAt, null);
+  assert.equal((await store.listSessions(account.id, "tok")).find((item) => item.current)?.current, true);
+  assert.deepEqual(await store.listSessions("another-user", "other"), []);
+  assert.deepEqual(Object.keys((await store.listSessions(account.id, "tok"))[0]!).sort(), ["createdAt", "current", "expiresAt"]);
+  await store.revokeOtherSessions(account.id, "tok");
+  assert.ok((await store.findSession("other"))!.revokedAt);
+  assert.equal((await store.findSession("tok"))!.revokedAt, null, "the current session remains authenticated");
   await store.revokeSession("tok");
   assert.ok((await store.findSession("tok"))!.revokedAt);
   assert.equal(await store.findSession("nope"), null);

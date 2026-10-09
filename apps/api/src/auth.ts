@@ -32,6 +32,7 @@ export function normalizeEmail(email: string): string {
 
 export type AuthAccount = { id: string; email: string; createdAt: string };
 export type SessionRecord = { userId: string; email: string; expiresAt: Date; revokedAt: Date | null };
+export type SessionSummary = { createdAt: string; expiresAt: string; current: boolean };
 
 export interface AuthStore {
   createAccount(email: string, passwordHash: string): Promise<AuthAccount | null>;
@@ -39,6 +40,8 @@ export interface AuthStore {
   createSession(input: { userId: string; email: string; tokenHash: string; expiresAt: Date }): Promise<void>;
   findSession(tokenHash: string): Promise<SessionRecord | null>;
   revokeSession(tokenHash: string): Promise<void>;
+  listSessions(userId: string, currentTokenHash: string): Promise<SessionSummary[]>;
+  revokeOtherSessions(userId: string, currentTokenHash: string): Promise<void>;
   ready(): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -69,6 +72,15 @@ export class MemoryAuthStore implements AuthStore {
   async revokeSession(tokenHash: string): Promise<void> {
     const session = this.sessions.get(tokenHash);
     if (session) session.revokedAt = new Date();
+  }
+
+  async listSessions(userId: string, currentTokenHash: string): Promise<SessionSummary[]> {
+    return [...this.sessions.entries()].filter(([, session]) => session.userId === userId && !session.revokedAt && session.expiresAt > new Date())
+      .map(([tokenHash, session]) => ({ createdAt: "", expiresAt: session.expiresAt.toISOString(), current: tokenHash === currentTokenHash }));
+  }
+
+  async revokeOtherSessions(userId: string, currentTokenHash: string): Promise<void> {
+    for (const [tokenHash, session] of this.sessions) if (session.userId === userId && tokenHash !== currentTokenHash && !session.revokedAt) session.revokedAt = new Date();
   }
 
   async ready(): Promise<boolean> {
@@ -126,6 +138,16 @@ export class PgAuthStore implements AuthStore {
 
   async revokeSession(tokenHash: string): Promise<void> {
     await this.pool.query("UPDATE auth_sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL", [tokenHash]);
+  }
+
+  async listSessions(userId: string, currentTokenHash: string): Promise<SessionSummary[]> {
+    const result = await this.pool.query<{ token_hash: string; created_at: Date; expires_at: Date }>(
+      "SELECT token_hash, created_at, expires_at FROM auth_sessions WHERE account_id = $1 AND revoked_at IS NULL AND expires_at > now() ORDER BY created_at DESC", [userId]);
+    return result.rows.map((row) => ({ createdAt: row.created_at.toISOString(), expiresAt: row.expires_at.toISOString(), current: row.token_hash === currentTokenHash }));
+  }
+
+  async revokeOtherSessions(userId: string, currentTokenHash: string): Promise<void> {
+    await this.pool.query("UPDATE auth_sessions SET revoked_at = now() WHERE account_id = $1 AND token_hash <> $2 AND revoked_at IS NULL", [userId, currentTokenHash]);
   }
 
   async ready(): Promise<boolean> {

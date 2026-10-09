@@ -124,12 +124,7 @@ function appendCertificateAction(container, data) {
     try {
       const response = await fetch('/v1/certificates', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          verdict: data.verdict,
-          risk_score: data.risk_score ?? 0,
-          scam_types: data.scam_types ?? [],
-          message: data.customer_message?.text ?? message.value
-        })
+        body: JSON.stringify({ scan_id: data.scan_id })
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail ?? 'The check could not be signed.');
