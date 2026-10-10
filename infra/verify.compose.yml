@@ -89,7 +89,6 @@ services:
       OPENAI_API_KEY: verify-test-key
       OPENAI_MODEL: verify-test-model
       OPENAI_BASE_URL: http://openai-mock:4010/v1/chat/completions
-      FIELD_KEK: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     ports: ["${API2_HOST_PORT:-33003}:3001"]
     depends_on:
       migrate: { condition: service_completed_successfully }

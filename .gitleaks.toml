@@ -1,0 +1,10 @@
+# This exact historical match is an ephemeral test fixture value, not a credential.
+# The test now generates independent random secrets at runtime. Keep this narrowly
+# scoped to the single already-pushed commit/fingerprint; do not broaden the rule.
+[[allowlists]]
+description = "Historical synthetic test certificate secret in commit 91b3edd"
+commits = ["91b3eddf518feb75d41b9bcbad30023fe9fc72e7"]
+paths = ["tests/http-security.test.mjs"]
+fingerprints = [
+  "91b3eddf518feb75d41b9bcbad30023fe9fc72e7:tests/http-security.test.mjs:generic-api-key:19"
+]

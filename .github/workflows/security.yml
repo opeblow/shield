@@ -12,7 +12,7 @@ jobs:
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -25,15 +25,24 @@ jobs:
             --lockfile=package-lock.json
   semgrep:
     runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v4
-      - uses: semgrep/semgrep-action@v1
+      - uses: actions/checkout@v6
+      - name: Run Semgrep rulesets
+        run: |
+          mkdir -p reports
+          semgrep scan --config p/typescript --config p/nodejs --config p/security-audit --error --json --output reports/semgrep.json
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          config: p/typescript p/nodejs p/security-audit
+          name: semgrep-report
+          path: reports/semgrep.json
+          if-no-files-found: warn
   codeql:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: github/codeql-action/init@v3
         with:
           languages: javascript-typescript
@@ -42,16 +51,17 @@ jobs:
   secrets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
   container:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
@@ -59,13 +69,13 @@ jobs:
           file: infra/Dockerfile
           tags: shield:ci
           load: true
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0, verified upstream signature
         with:
           image-ref: shield:ci
           severity: HIGH,CRITICAL
           exit-code: "1"
           scan-type: image
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0, verified upstream signature
         with:
           scan-type: config
           scan-ref: .

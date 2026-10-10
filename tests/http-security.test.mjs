@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import net from "node:net";
 
@@ -16,7 +17,7 @@ test("HTTP auth, CSRF, session IDOR, headers, and input validation attacks fail 
   const base = `http://127.0.0.1:${port}`;
   const server = spawn(process.execPath, ["dist/apps/api/src/server.js"], {
     cwd: process.cwd(),
-    env: { ...process.env, NODE_ENV: "development", PORT: String(port), AUTH_SECRET: "test-auth-secret-that-is-long-enough-0001", CERTIFICATE_SECRET: "test-cert-secret-that-is-long-enough-0001" },
+    env: { ...process.env, NODE_ENV: "development", PORT: String(port), AUTH_SECRET: randomBytes(32).toString("base64url"), CERTIFICATE_SECRET: randomBytes(32).toString("base64url") },
     stdio: "ignore"
   });
   t.after(() => { server.kill(); });
