@@ -9,6 +9,7 @@ build/
 # Test and coverage output
 coverage/
 .nyc_output/
+/reports/
 
 # Environment and secrets
 .env
@@ -38,6 +39,8 @@ desktop.ini
 # Caches and temporary files
 .cache/
 .tmp/
+__pycache__/
+*.py[cod]
 tmp/
 temp/
 *.local

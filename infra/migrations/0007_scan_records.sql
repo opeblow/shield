@@ -17,3 +17,8 @@ CREATE TABLE IF NOT EXISTS scan_records (
 
 CREATE INDEX IF NOT EXISTS scan_records_created ON scan_records (created_at DESC);
 CREATE INDEX IF NOT EXISTS scan_records_owner ON scan_records (owner_id, created_at DESC);
+ALTER TABLE scan_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scan_records FORCE ROW LEVEL SECURITY;
+CREATE POLICY scan_records_tenant_isolation ON scan_records
+  USING (tenant_id IS NULL OR tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id IS NULL OR tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);

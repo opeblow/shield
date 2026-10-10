@@ -1,0 +1,30 @@
+{
+  "ci": {
+    "collect": {
+      "url": [
+        "http://127.0.0.1:33000/",
+        "http://127.0.0.1:33000/auth?mode=signup",
+        "http://127.0.0.1:33000/docs",
+        "http://127.0.0.1:33000/recovery",
+        "http://127.0.0.1:33000/share"
+      ],
+      "numberOfRuns": 3,
+      "settings": {
+        "emulatedFormFactor": "mobile",
+        "throttlingMethod": "simulate"
+      }
+    },
+    "assert": {
+      "assertions": {
+        "categories:performance": ["error", { "minScore": 0.8 }],
+        "largest-contentful-paint": ["error", { "maxNumericValue": 2500 }],
+        "resource-summary:script:size": ["error", { "maxNumericValue": 256000 }],
+        "resource-summary:stylesheet:size": ["error", { "maxNumericValue": 102400 }]
+      }
+    },
+    "upload": {
+      "target": "filesystem",
+      "outputDir": "reports/lighthouse"
+    }
+  }
+}

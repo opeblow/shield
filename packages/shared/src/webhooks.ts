@@ -40,13 +40,13 @@ export type WebhookDispatcherOptions = {
 };
 
 /** Delivers a signed webhook with bounded exponential backoff. The default sleep honours abort signals in real deployments. */
-export async function deliverWebhook(input: { url: string; secret: string; event: string; payload: unknown }, options: WebhookDispatcherOptions = {}): Promise<DispatchResult> {
+export async function deliverWebhook(input: { url: string; secret: string; event: string; payload: unknown; deliveryId?: string }, options: WebhookDispatcherOptions = {}): Promise<DispatchResult> {
   const deliver = options.deliver ?? defaultDeliver;
   const maxAttempts = options.maxAttempts ?? 4;
   const baseDelayMs = options.baseDelayMs ?? 200;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const body = JSON.stringify(input.payload);
-  const deliveryId = randomUUID();
+  const deliveryId = input.deliveryId ?? randomUUID();
   let lastStatus: number | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const timestamp = Date.now();

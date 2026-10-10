@@ -1,0 +1,32 @@
+# Production readiness evidence
+
+Run date: 2026-10-10 (America/Los_Angeles). Commands ran from the repository root unless noted. PowerShell policy blocks the `npm` shim, so local npm commands use `npm.cmd`.
+
+Product-wide evidence is indexed in `FEATURE_MATRIX.md`, `TEST_REPORT.md`, `LATENCY_BUDGETS.md`, and `BLOCKERS.md`. The expanded Chromium E2E passed 10 functional assertions against the local development-mode server; axe checkpoints were unavailable because axe-core could not be installed.
+
+| Check | Exact command | Measured result | Status | Fix / limitation |
+|---|---|---|---|---|
+| TypeScript | `npm.cmd run typecheck` | exit 0; no diagnostics after RLS context changes | PASS | None |
+| ESLint | `npm.cmd run lint` | exit 0; no diagnostics after harness changes | PASS | Removed unused harness variables flagged by lint |
+| Build and unit/security tests | `npm.cmd test` | build exit 0; 61 tests passed, 0 failed | PASS | Includes existing HTTP/adversarial tests; Compose suite remains separate |
+| Product evaluation | `npm.cmd run eval` | 450 self-authored cases; TP 300, FN 0, FP 0, TN 150; recall 1.00, FPR 0.00 | PASS (pipeline only) | Not independent efficacy evidence |
+| Docker Compose / CI YAML syntax | `python -c "import yaml,pathlib; [yaml.safe_load(pathlib.Path(f).read_text()) for f in ['infra/verify.compose.yml','infra/docker-compose.yml','.github/workflows/verify-stack.yml']]"` | exit 0; all three YAML files parsed | PASS (syntax only) | Docker Compose semantic validation unavailable without Docker |
+| Verification script syntax | `& 'C:\Program Files\Git\bin\bash.exe' -n scripts/verify-all.sh`; PowerShell `Parser.ParseFile` on `scripts/verify-all.ps1` | Bash parse exit 0; PowerShell parse has 0 errors | PASS (syntax only) | Scripts have not run because Docker is absent |
+| JavaScript harness syntax | `node --check` for `scripts/migrate.mjs`, `scripts/migration-drill.mjs`, `scripts/worker.mjs`, `scripts/openai-mock.mjs`, `scripts/backup-restore.mjs`, `scripts/chaos.mjs`, `tests/integration/stack.test.mjs` | all exit 0 | PASS (syntax only) | Runtime behavior awaits Docker-backed run |
+| Online npm advisory audit | `npm.cmd audit --registry=https://registry.npmjs.org/ --audit-level=high` | exit 1; registry advisory bulk endpoint request failed | UNAVAILABLE | Fresh online audit runs in `security.yml`; no Actions result available from this machine |
+| Offline full dependency audit | `npm.cmd audit --offline` | exit 0; `found 0 vulnerabilities` using cached advisories | PASS (cache snapshot only) | Cannot establish current advisories |
+| Full-stack integration suite | `npm run integration` | not run; Docker executable/daemon unavailable | UNAVAILABLE | Run `scripts/verify-all.sh` or `scripts/verify-all.ps1` on a Docker-enabled host |
+| PostgreSQL RLS / migration up-down | `docker compose -f infra/verify.compose.yml up ...`; `npm run migration:drill` | not run; Docker unavailable | UNAVAILABLE | Harness includes non-superuser RLS checks, schema-wide tenant-table RLS assertion, and isolated up/down/up database drill; no database results yet |
+| Redis queue / concurrent registration | `npm run integration` | not run; Redis/PostgreSQL services unavailable | UNAVAILABLE | Suite exercises worker claim/ack/dead-letter and concurrent duplicate registrations against Redis/PostgreSQL |
+| OWASP ZAP baseline and API scans | `scripts/verify-all.sh` / `scripts/verify-all.ps1` | not run; Docker unavailable | UNAVAILABLE | Workflow runs both scans and archives JSON/stdout reports |
+| k6 baseline/ramp/spike/soak | `scripts/verify-all.sh` / `scripts/verify-all.ps1` | not run; Docker unavailable | UNAVAILABLE | Profiles target `/readyz` dependency readiness, not scan throughput; soak is 10 minutes |
+| Dependency chaos and model failure recovery | `npm run chaos`; `npm run integration` | not run; Docker unavailable | UNAVAILABLE | Harness stops/restarts PostgreSQL, Redis and worker; mock OpenAI tests timeout, 503, rules fallback and recovery after circuit-breaker window |
+| PostgreSQL backup/restore | `npm run backup:restore` | not run; Docker unavailable | UNAVAILABLE | Script dumps custom format, restores into a temporary database, compares tenant/scan/account counts, and writes measured RTO JSON |
+| Verification CI | `.github/workflows/verify-stack.yml` | workflow configured to run full checks and upload `reports/`; no GitHub Actions execution observed | CONFIGURED / UNVERIFIED | Push candidate and inspect uploaded artifacts and job failures |
+| Browser E2E | `python tests/e2e/browser_e2e.py` | 10 functional assertions passed; includes desktop/mobile and keyboard-only primary flows; 15 axe checkpoints report UNAVAILABLE | PASS for functional local mode only | Axe-core and DB-backed paths require registry/Docker/CI runtime |
+| Product scan queue | `apps/api/src/jobs.ts`, `apps/api/src/scan-worker.ts`, `tests/integration/stack.test.mjs` | Redis-backed deep scan path, persistent SSE, owner/tenant checks, idempotent terminal result, retry/dead-letter/backpressure and multi-replica recovery tests implemented | IMPLEMENTED / UNVERIFIED | Docker absent; integration tests have not run |
+| Feature E2E matrix | `FEATURE_MATRIX.md` | Expanded browser suite covers primary flows; full route/failure matrix remains incomplete | PARTIAL | Complete OPEN/UNAVAILABLE cases; see `BLOCKERS.md` |
+| Latency budgets and CI gates | `LATENCY_BUDGETS.md`, `.lighthouserc.json` | Scan API/worker stage timings added; mobile Lighthouse and bundle gates configured; endpoint p50/p95/p99 and Lighthouse run unavailable | PARTIAL / UNAVAILABLE | Add endpoint k6 workloads and run Docker/CI with package registry access |
+| Candidate launch status | `docker`, k6, ZAP, PostgreSQL runtime | no Docker binary is available; no stack results exist | NO-GO | See exact external actions in `RESIDUAL_RISKS.md` |
+
+The verification-only `worker` remains for its queue harness; product deep scans now use the separate Redis-backed `scan-worker` path. The k6 checks still exercise API dependency-readiness requests, not the full product endpoint set or production capacity. Deep scans accept scoped idempotency keys; other state-changing APIs do not have a general idempotency facility. Full axe, offline/slow-network, real provider sandbox, Docker integration and clean-checkout results are unavailable. See `BLOCKERS.md`. Launch remains NO-GO.

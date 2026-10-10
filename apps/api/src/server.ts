@@ -1,9 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { loadEnv } from "./env.js";
-import { OpenAiProvider } from "./provider.js";
 import { scanText } from "../../../packages/risk-engine/src/scan.js";
 import { combineInputs, type ScanInput } from "../../../packages/risk-engine/src/combined.js";
 import { assessTransaction } from "../../../packages/risk-engine/src/assess.js";
@@ -15,7 +14,7 @@ import { deliverWebhook } from "../../../packages/shared/src/webhooks.js";
 import { SimulatedSpeechProvider, OpenAiSpeechProvider, SpeechProviderRegistry } from "../../../packages/channels/src/voice.js";
 import { ScanRepository } from "./repository.js";
 import { MemoryScanRecordStore, PgScanRecordStore, type ScanRecordStore } from "./scan-records.js";
-import { ScanJobRegistry } from "./jobs.js";
+import { RedisScanQueue } from "./jobs.js";
 import { redactSensitive } from "../../../packages/shared/src/redaction.js";
 import { assessRequestSchema, authLoginSchema, authRegisterSchema, batchScanRequestSchema, certificateRequestSchema, communityReportSchema, decideReportSchema, integrationKeySchema, linkPreviewRequestSchema, lookupRequestSchema, moderateReportSchema, reputationReportSchema, scanRequestSchema, verifyChannelSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "./validation.js";
 import { MemoryAuthStore, PgAuthStore, hashPassword, normalizeEmail, verifyPassword, type AuthStore } from "./auth.js";
@@ -32,7 +31,6 @@ import { BILLING_RATES, calculateUsageEstimate } from "./billing.js";
 import { ConcurrencyGate } from "./capacity.js";
 
 const env = loadEnv();
-const provider = new OpenAiProvider(env.openAiKey, env.openAiModel);
 const repository = env.databaseUrl ? new ScanRepository(env.databaseUrl) : undefined;
 const authStore: AuthStore = env.databaseUrl ? new PgAuthStore(env.databaseUrl) : new MemoryAuthStore();
 const reputationStore: ReputationStore = env.databaseUrl
@@ -42,6 +40,7 @@ const integrationKeyStore: IntegrationKeyStore = env.databaseUrl ? new PgIntegra
 const authSecret = Buffer.from(env.authSecret ?? "development-only-auth-secret-change-me");
 const certificateSecret = Buffer.from(env.certificateSecret ?? env.authSecret ?? "development-only-certificate-secret-change-me");
 const scanRecordStore: ScanRecordStore = env.databaseUrl ? new PgScanRecordStore(env.databaseUrl) : new MemoryScanRecordStore();
+const scanQueue = env.redisUrl ? new RedisScanQueue(env.redisUrl) : undefined;
 const SESSION_COOKIE = "shield_session";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const limit = 64 * 1024;
@@ -78,8 +77,15 @@ const staticFiles: Record<string, { file: string; type: string }> = {
 const rateLimiter: RateLimiter = env.redisUrl && env.apiKeyPepper
   ? new RedisRateLimiter(env.redisUrl, Buffer.from(env.apiKeyPepper))
   : new MemoryRateLimiter();
-const scanJobs = new ScanJobRegistry();
 const scanCapacity = new ConcurrencyGate(64);
+
+function idempotentScanId(scope: string, key: string): string {
+  const bytes = createHash("sha256").update(`${scope}:${key}`).digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 const assessCapacity = new ConcurrencyGate(32);
 const speechRegistry = new SpeechProviderRegistry().register("simulated", new SimulatedSpeechProvider());
 if (env.openAiKey && env.openAiTranscribeModel && env.openAiTtsModel) {
@@ -430,8 +436,9 @@ const server = createServer({ maxHeaderSize: 16 * 1024 }, async (req, res) => {
   }
   if (req.method === "GET" && path === "/v1/integration/keys") {
     try {
-      if (!await requireSession(req, res)) return;
-      const keys = await integrationKeyStore.list();
+      const session = await currentSession(req);
+      if (!session) { problem(res, 401, "Unauthorized", "Sign in to continue."); return; }
+      const keys = await integrationKeyStore.list(session.email);
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(JSON.stringify({ keys: keys.map((key) => ({ id: key.id, name: key.name, scopes: key.scopes, created_at: key.createdAt, revoked_at: key.revokedAt, key_preview: `${key.keyHash.slice(0, 8)}…${key.keyHash.slice(-4)}` })) }));
     } catch {
@@ -442,8 +449,9 @@ const server = createServer({ maxHeaderSize: 16 * 1024 }, async (req, res) => {
   const integrationKeyDelete = /^\/v1\/integration\/keys\/([0-9a-f-]{36})$/i.exec(path);
   if (req.method === "DELETE" && integrationKeyDelete) {
     try {
-      if (!await requireSession(req, res)) return;
-      const removed = await integrationKeyStore.revoke(integrationKeyDelete[1]!);
+      const session = await currentSession(req);
+      if (!session) { problem(res, 401, "Unauthorized", "Sign in to continue."); return; }
+      const removed = await integrationKeyStore.revoke(integrationKeyDelete[1]!, session.email);
       if (!removed) { problem(res, 404, "Key not found", "No active key with that id."); return; }
       res.writeHead(204, { "cache-control": "no-store" });
       res.end();
@@ -750,22 +758,37 @@ const server = createServer({ maxHeaderSize: 16 * 1024 }, async (req, res) => {
   const scanStream = /^\/v1\/scans\/([0-9a-f-]{36})\/stream$/i.exec(path);
   if (req.method === "GET" && scanStream) {
     const id = scanStream[1]!;
-    if (!scanJobs.has(id)) { problem(res, 404, "Not found", "No stream is available for that scan."); return; }
+    const [session, tenantAuth] = await Promise.all([currentSession(req), resolveTenant(req, "scans:write")]);
+    const tenantId = tenantAuth.status === "ok" ? tenantAuth.tenantId : null;
+    if (!scanQueue || tenantAuth.status === "error" || !(await scanQueue.authorized(id, session?.userId ?? null, tenantId))) {
+      problem(res, 404, "Not found", "No stream is available for that scan."); return;
+    }
     res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive" });
-    const send = (entry: { stage: string; result: unknown }): void => {
-      res.write(`event: ${entry.stage}\ndata: ${JSON.stringify(entry.result)}\n\n`);
-      if (entry.stage === "final") res.end();
+    let cursor = typeof req.headers["last-event-id"] === "string" ? req.headers["last-event-id"] : "-";
+    let closed = false;
+    let pollTimer: NodeJS.Timeout | undefined;
+    const keepAlive = setInterval(() => { if (!closed) res.write(": ping\n\n"); }, 15_000);
+    req.on("close", () => { closed = true; clearInterval(keepAlive); if (pollTimer) clearTimeout(pollTimer); });
+    const pump = async (): Promise<void> => {
+      if (closed) return;
+      try {
+        const entries = await scanQueue.events(id, cursor);
+        for (const entry of entries) {
+          cursor = entry.id;
+          res.write(`id: ${entry.id}\nevent: ${entry.stage}\ndata: ${JSON.stringify(entry.result)}\n\n`);
+        }
+        if (await scanQueue.status(id) === "done") {
+          closed = true; clearInterval(keepAlive); res.end(); return;
+        }
+        pollTimer = setTimeout(() => { void pump(); }, 250);
+      } catch { closed = true; clearInterval(keepAlive); res.end(); }
     };
-    const unsubscribe = scanJobs.subscribe(id, send) ?? (() => {});
-    const keepAlive = setInterval(() => res.write(": ping\n\n"), 15_000);
-    req.on("close", () => { clearInterval(keepAlive); unsubscribe(); });
-    if (scanJobs.isDone(id)) { clearInterval(keepAlive); res.end(); }
+    void pump();
     return;
   }
   if (req.method === "POST" && path === "/v1/scans") {
     const releaseCapacity = scanCapacity.tryAcquire();
     if (!releaseCapacity) { problem(res, 503, "Scan capacity reached", "The scan service is at temporary capacity. Retry shortly."); return; }
-    let capacityTransferred = false;
     try {
       const address = req.socket.remoteAddress ?? "unknown";
       let rate;
@@ -782,45 +805,60 @@ const server = createServer({ maxHeaderSize: 16 * 1024 }, async (req, res) => {
       const scanInput = validated.data;
       const combined = scanInput.inputs ? combineInputs(scanInput.inputs as ScanInput[]) : null;
       const sourceText = scanInput.text ?? combined!.text;
-      const scanId = randomUUID();
+      const idempotencyHeader = req.headers["idempotency-key"];
+      const idempotencyKey = typeof idempotencyHeader === "string" ? idempotencyHeader : undefined;
+      if (idempotencyHeader !== undefined && (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 128 || !/^[\x21-\x7e]+$/.test(idempotencyKey))) {
+        problem(res, 400, "Invalid idempotency key", "Idempotency-Key must contain 8 to 128 visible ASCII characters."); return;
+      }
+      const idempotencyScope = tenantId ?? scanSession?.userId ?? (req.socket.remoteAddress ?? "anonymous");
+      const deepAssessRequested = scanInput.mode !== "fast" && Boolean(env.openAiKey && env.openAiModel);
+      const scanId = idempotencyKey && deepAssessRequested ? idempotentScanId(idempotencyScope, idempotencyKey) : randomUUID();
       const runScan = async (assess?: (text: string, signals: Record<string, boolean>) => Promise<{ scam: boolean; scam_types: string[]; confidence: number; reasons: string[] }>): Promise<ScanResult> => {
+        const stageStarted = performance.now();
         const result = await scanText(sourceText, {
           scanId,
           ...(scanInput.language ? { language: scanInput.language as Language } : {}),
           lookup: async (entities) => lookupIntelligence(entities, reputationStore),
           ...(assess ? { assess } : {})
         });
+        logEvent("scan_stage_timing", { scanId, stage: "fast_assessment", duration_ms: Math.round(performance.now() - stageStarted) });
         return combined ? { ...result, input_types: combined.types } : result;
       };
-      const deepAssess = scanInput.mode !== "fast" && Boolean(env.openAiKey && env.openAiModel);
+      const deepAssess = deepAssessRequested;
       if (deepAssess) {
+        if (!scanQueue) { problem(res, 503, "Deep scan unavailable", "Durable scan processing requires Redis. Retry with fast scan or try later."); return; }
         const fast = await runScan();
-        scanJobs.create(scanId);
-        scanJobs.publish(scanId, { stage: "fast", result: fast });
         if (repository) {
-          try { await repository.save(fast, redactSensitive(sourceText).text, tenantId); }
+          try {
+            const persistenceStarted = performance.now();
+            await repository.save(fast, redactSensitive(sourceText).text, tenantId);
+            logEvent("scan_stage_timing", { scanId, stage: "postgres_persist_fast", duration_ms: Math.round(performance.now() - persistenceStarted) });
+          }
           catch { problem(res, 503, "Storage unavailable", "The scan could not be safely saved. Please retry shortly."); return; }
         } else if (env.nodeEnv === "production") { problem(res, 503, "Storage unavailable", "Scanning is temporarily unavailable."); return; }
         await rememberScan(scanId, fast, sourceText, scanSession?.userId ?? null, tenantId);
         if (tenantId && repository) { try { await repository.recordUsage(tenantId, "scan"); } catch { logEvent("usage_record_failed", { metric: "scan" }); } }
-        capacityTransferred = true;
-        void (async () => {
-          try {
-            const deep = await runScan((text, signals) => provider.assess(text, signals));
-            scanJobs.publish(scanId, { stage: "deep", result: deep });
-            void dispatchWebhookEvent(tenantId, "scan.completed", deep);
-          } catch { logEvent("deep_scan_failed", { scanId }); }
-          finally { scanJobs.complete(scanId); releaseCapacity(); }
-        })();
+        const enqueueStarted = performance.now();
+        const enqueued = await scanQueue.enqueue({
+          scanId, text: redactSensitive(sourceText).text, language: fast.customer_message.language,
+          inputTypes: combined?.types ?? ["text"], tenantId, ownerId: scanSession?.userId ?? null, attempts: 0
+        }, fast);
+        logEvent("scan_stage_timing", { scanId, stage: "redis_enqueue", duration_ms: Math.round(performance.now() - enqueueStarted) });
+        if (enqueued === "full") { problem(res, 503, "Scan queue full", "Background scans are at capacity. Retry shortly."); return; }
+        if (enqueued === "duplicate") {
+          const existing = await scanQueue.result(scanId);
+          if (!existing) { problem(res, 409, "Duplicate scan", "This scan is already queued; reconnect to its progress stream."); return; }
+          res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "idempotency-replayed": "true" });
+          const shield = await buildShieldContext({ text: sourceText, inputs: scanInput.inputs }, reputationStore);
+          res.end(JSON.stringify({ ...existing, upgrade_url: `/v1/scans/${scanId}/stream`, shield }));
+          return;
+        }
         res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
         const shield = await buildShieldContext({ text: sourceText, inputs: scanInput.inputs }, reputationStore);
         res.end(JSON.stringify({ ...fast, upgrade_url: `/v1/scans/${scanId}/stream`, shield }));
         return;
       }
       const result = await runScan();
-      scanJobs.create(scanId);
-      scanJobs.publish(scanId, { stage: "final", result });
-      scanJobs.complete(scanId);
       if (repository) {
         try { await repository.save(result, redactSensitive(sourceText).text, tenantId); }
         catch { problem(res, 503, "Storage unavailable", "The scan could not be safely saved. Please retry shortly."); return; }
@@ -840,7 +878,7 @@ const server = createServer({ maxHeaderSize: 16 * 1024 }, async (req, res) => {
       if (message === "request_too_large") { problem(res, 413, "Payload too large", "The request exceeds the 64 KiB limit."); return; }
       if (message === "invalid_json") { problem(res, 400, "Invalid request", "The request body must be a JSON object."); return; }
       problem(res, 400, "Scan failed", message === "Text must contain 2 to 20,000 characters" ? message : "The scan could not be completed.");
-    } finally { if (!capacityTransferred) releaseCapacity(); }
+    } finally { releaseCapacity(); }
     return;
   }
   if (req.method === "POST" && path === "/v1/link-preview") {
@@ -1059,6 +1097,7 @@ async function permitModeration(req: IncomingMessage, res: ServerResponse): Prom
 }
 
 async function start(): Promise<void> {
+  await scanQueue?.connect();
   if (rateLimiter instanceof RedisRateLimiter) await rateLimiter.connect();
   server.headersTimeout = 15_000;
   server.requestTimeout = 30_000;
@@ -1071,7 +1110,7 @@ void start().catch(() => { logEvent("server_start_failed"); process.exitCode = 1
 function shutdown(): void {
   clearInterval(waveTicker);
   server.close(() => {
-    void Promise.all([repository?.close(), authStore.close(), rateLimiter.close(), reputationStore.close(), integrationKeyStore.close(), waveStore.close(), scanRecordStore.close()]).finally(() => process.exit(0));
+    void Promise.all([repository?.close(), authStore.close(), rateLimiter.close(), reputationStore.close(), integrationKeyStore.close(), waveStore.close(), scanRecordStore.close(), scanQueue?.close()]).finally(() => process.exit(0));
   });
 }
 process.on("SIGINT", shutdown);

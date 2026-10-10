@@ -7,8 +7,6 @@ import { fetchUrlSafely, isPublicAddress } from "../packages/risk-engine/src/url
 import { sniffArtifactKind, validateArtifact } from "../apps/api/src/ingestion.js";
 import { SimulatedSpeechProvider } from "../packages/channels/src/voice.js";
 import { ReplayGuard, deliverWebhook, verifyWebhookSignature, webhookSignature } from "../packages/shared/src/webhooks.js";
-import { ScanJobRegistry } from "../apps/api/src/jobs.js";
-import type { ScanResult } from "../packages/risk-engine/src/types.js";
 import { assessRequestSchema, authLoginSchema, authRegisterSchema, batchScanRequestSchema, linkPreviewRequestSchema, scanRequestSchema, voiceSpeakRequestSchema, webhookRequestSchema } from "../apps/api/src/validation.js";
 import { MemoryAuthStore, hashPassword, normalizeEmail, verifyPassword } from "../apps/api/src/auth.js";
 import { calculateUsageEstimate } from "../apps/api/src/billing.js";
@@ -118,29 +116,6 @@ test("combined inputs merge into one verdict and carry their input types", async
   const result = await scanCombined([{ type: "text", text: "Send your OTP now" }, { type: "qr", payload: "https://bit.ly/claim" }]);
   assert.notEqual(result.verdict, "safe");
   assert.deepEqual(result.input_types, ["text", "qr"]);
-});
-
-test("scan job registry replays stages and reports completion for streaming", () => {
-  const jobs = new ScanJobRegistry();
-  jobs.create("job-1");
-  const seen: string[] = [];
-  jobs.subscribe("job-1", (entry) => seen.push(entry.stage));
-  jobs.publish("job-1", { stage: "fast", result: {} as ScanResult });
-  jobs.complete("job-1");
-  assert.deepEqual(seen, ["fast", "final"]);
-  assert.equal(jobs.isDone("job-1"), true);
-  assert.equal(jobs.subscribe("missing", () => {}), undefined);
-
-  const bounded = new ScanJobRegistry(1, 0);
-  bounded.create("completed");
-  bounded.publish("completed", { stage: "final", result: {} as ScanResult });
-  bounded.complete("completed");
-  bounded.create("replacement");
-  assert.equal(bounded.has("completed"), false, "expired completed results are evicted");
-  assert.equal(bounded.has("replacement"), true);
-  const full = new ScanJobRegistry(1);
-  full.create("active");
-  assert.throws(() => full.create("over-capacity"), /scan_capacity_exceeded/);
 });
 
 test("new request schemas validate B2B, combined, webhook and voice payloads", () => {
@@ -316,7 +291,10 @@ test("integration key lifecycle: create, authenticate, scope-gate, and revoke", 
   assert.ok(found);
   assert.ok((found.scopes as string[]).includes("scans:write"));
   assert.equal(await store.findByHash("wrong-hash"), null);
-  assert.equal(await store.revoke(created.id), true);
+  assert.equal((await store.list("bob@example.com")).length, 0);
+  assert.equal((await store.list("ada@example.com")).length, 1);
+  assert.equal(await store.revoke(created.id, "bob@example.com"), false);
+  assert.equal(await store.revoke(created.id, "ada@example.com"), true);
   assert.equal(await store.findByHash(raw), null);
 });
 

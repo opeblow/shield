@@ -32,7 +32,10 @@ export class ScanRepository {
       const retentionHours = Math.min(24, Math.max(1, Number(process.env.DATA_RETENTION_HOURS_CONSUMER ?? "24")));
       await client.query(
         `INSERT INTO scans (id, tenant_id, user_id, input_types, verdict, risk_score, confidence, scam_types, language, latency_ms, model_version, content_hash, redacted_input_cipher, result, created_at, expires_at)
-         VALUES ($1, $2, NULL, ARRAY['text'], $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11::jsonb, now(), now() + ($12::text || ' hours')::interval)`,
+         VALUES ($1, $2, NULL, ARRAY['text'], $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11::jsonb, now(), now() + ($12::text || ' hours')::interval)
+         ON CONFLICT (id) DO UPDATE SET verdict = EXCLUDED.verdict, risk_score = EXCLUDED.risk_score,
+           confidence = EXCLUDED.confidence, scam_types = EXCLUDED.scam_types, language = EXCLUDED.language,
+           latency_ms = EXCLUDED.latency_ms, model_version = EXCLUDED.model_version, result = EXCLUDED.result`,
         [result.scan_id, tenantId, result.verdict, result.risk_score, result.confidence, result.scam_types, result.customer_message.language, result.latency_ms, result.model_version, hash, JSON.stringify(resultForStorage(result)), retentionHours]
       );
       await client.query("COMMIT");
@@ -194,20 +197,30 @@ export class ScanRepository {
   async recordUsage(tenantId: string, metric: string, quantity = 1): Promise<void> {
     const client = await this.pool.connect();
     try {
+      await client.query("BEGIN");
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
       await client.query("INSERT INTO usage_events (tenant_id, metric, quantity) VALUES ($1, $2, $3)", [tenantId, metric, quantity]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     } finally { client.release(); }
   }
 
   async usageSummary(tenantId: string, since = new Date(Date.now() - 30 * 24 * 3600 * 1000)): Promise<Array<{ metric: string; quantity: number }>> {
     const client = await this.pool.connect();
     try {
+      await client.query("BEGIN");
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
       const result = await client.query<{ metric: string; quantity: string }>(
         "SELECT metric, COALESCE(SUM(quantity), 0) AS quantity FROM usage_events WHERE tenant_id = $1 AND at >= $2 GROUP BY metric ORDER BY metric",
         [tenantId, since]
       );
+      await client.query("COMMIT");
       return result.rows.map((row) => ({ metric: row.metric, quantity: Number(row.quantity) }));
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     } finally { client.release(); }
   }
 
@@ -234,11 +247,16 @@ export class ScanRepository {
   async listWebhooks(tenantId: string): Promise<Array<{ id: string; url: string; events: string[]; status: string }>> {
     const client = await this.pool.connect();
     try {
+      await client.query("BEGIN");
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
       const result = await client.query<{ id: string; url: string; events: string[]; status: string }>(
         "SELECT id, url, events, status FROM webhooks WHERE tenant_id = $1 ORDER BY created_at DESC", [tenantId]
       );
+      await client.query("COMMIT");
       return result.rows;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     } finally { client.release(); }
   }
 
@@ -259,11 +277,16 @@ export class ScanRepository {
   async activeWebhooks(tenantId: string, keyring: Keyring): Promise<Array<{ id: string; url: string; events: string[]; secret: string }>> {
     const client = await this.pool.connect();
     try {
+      await client.query("BEGIN");
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
       const result = await client.query<{ id: string; url: string; events: string[]; secret_cipher: EncryptedField }>(
         "SELECT id, url, events, secret_cipher FROM webhooks WHERE tenant_id = $1 AND status = 'active'", [tenantId]
       );
+      await client.query("COMMIT");
       return result.rows.map((row) => ({ id: row.id, url: row.url, events: row.events, secret: decryptField(row.secret_cipher, `webhook:${tenantId}`, keyring) }));
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     } finally { client.release(); }
   }
 

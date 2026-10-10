@@ -16,36 +16,36 @@ export type IntegrationKey = {
 export interface IntegrationKeyStore {
   create(input: { name: string; keyHash: string; scopes: IntegrationScope[]; createdBy: string }): Promise<IntegrationKey>;
   findByHash(keyHash: string): Promise<IntegrationKey | null>;
-  list(): Promise<IntegrationKey[]>;
-  revoke(id: string): Promise<boolean>;
+  list(createdBy: string): Promise<IntegrationKey[]>;
+  revoke(id: string, createdBy: string): Promise<boolean>;
   ready(): Promise<boolean>;
   close(): Promise<void>;
 }
 
 export class MemoryIntegrationKeyStore implements IntegrationKeyStore {
-  private readonly keys = new Map<string, IntegrationKey>();
+  private readonly keys = new Map<string, { key: IntegrationKey; createdBy: string }>();
 
   async create(input: { name: string; keyHash: string; scopes: IntegrationScope[]; createdBy: string }): Promise<IntegrationKey> {
     const key: IntegrationKey = { id: randomUUID(), name: input.name, scopes: input.scopes, keyHash: input.keyHash, createdAt: new Date().toISOString(), revokedAt: null };
-    this.keys.set(key.id, key);
+    this.keys.set(key.id, { key, createdBy: input.createdBy });
     return key;
   }
 
   async findByHash(keyHash: string): Promise<IntegrationKey | null> {
-    for (const key of this.keys.values()) {
+    for (const { key } of this.keys.values()) {
       if (key.keyHash === keyHash && !key.revokedAt) return key;
     }
     return null;
   }
 
-  async list(): Promise<IntegrationKey[]> {
-    return [...this.keys.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  async list(createdBy: string): Promise<IntegrationKey[]> {
+    return [...this.keys.values()].filter((entry) => entry.createdBy === createdBy).map(({ key }) => key).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
-  async revoke(id: string): Promise<boolean> {
-    const key = this.keys.get(id);
-    if (!key || key.revokedAt) return false;
-    key.revokedAt = new Date().toISOString();
+  async revoke(id: string, createdBy: string): Promise<boolean> {
+    const entry = this.keys.get(id);
+    if (!entry || entry.createdBy !== createdBy || entry.key.revokedAt) return false;
+    entry.key.revokedAt = new Date().toISOString();
     return true;
   }
 
@@ -82,15 +82,15 @@ export class PgIntegrationKeyStore implements IntegrationKeyStore {
     return row ? { id: row.id, name: row.name, scopes: row.scopes as IntegrationScope[], keyHash, createdAt: row.created_at.toISOString(), revokedAt: row.revoked_at ? row.revoked_at.toISOString() : null } : null;
   }
 
-  async list(): Promise<IntegrationKey[]> {
+  async list(createdBy: string): Promise<IntegrationKey[]> {
     const result = await this.pool.query<{ id: string; name: string; scopes: string[]; key_hash: string; created_at: Date; revoked_at: Date | null }>(
-      "SELECT id, name, scopes, key_hash, created_at, revoked_at FROM integration_keys ORDER BY created_at"
+      "SELECT id, name, scopes, key_hash, created_at, revoked_at FROM integration_keys WHERE created_by = $1 ORDER BY created_at", [createdBy]
     );
     return result.rows.map((row) => ({ id: row.id, name: row.name, scopes: row.scopes as IntegrationScope[], keyHash: row.key_hash, createdAt: row.created_at.toISOString(), revokedAt: row.revoked_at ? row.revoked_at.toISOString() : null }));
   }
 
-  async revoke(id: string): Promise<boolean> {
-    const result = await this.pool.query("UPDATE integration_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL", [id]);
+  async revoke(id: string, createdBy: string): Promise<boolean> {
+    const result = await this.pool.query("UPDATE integration_keys SET revoked_at = now() WHERE id = $1 AND created_by = $2 AND revoked_at IS NULL", [id, createdBy]);
     return (result.rowCount ?? 0) > 0;
   }
 

@@ -58,12 +58,23 @@ export class PgScanRecordStore implements ScanRecordStore {
   }
 
   async save(record: ScanRecord): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO scan_records (scan_id, owner_id, tenant_id, verdict, risk_score, scam_types, language, redacted_text, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (scan_id) DO NOTHING`,
-      [record.scanId, record.ownerId, record.tenantId, record.verdict, record.riskScore, record.scamTypes, record.language, record.redactedText, record.createdAt]
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [record.tenantId ?? ""]);
+      await client.query(
+        `INSERT INTO scan_records (scan_id, owner_id, tenant_id, verdict, risk_score, scam_types, language, redacted_text, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (scan_id) DO UPDATE SET owner_id = EXCLUDED.owner_id, tenant_id = EXCLUDED.tenant_id,
+           verdict = EXCLUDED.verdict, risk_score = EXCLUDED.risk_score, scam_types = EXCLUDED.scam_types,
+           language = EXCLUDED.language, redacted_text = EXCLUDED.redacted_text`,
+        [record.scanId, record.ownerId, record.tenantId, record.verdict, record.riskScore, record.scamTypes, record.language, record.redactedText, record.createdAt]
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
   }
 
   async get(scanId: string): Promise<ScanRecord | null> {

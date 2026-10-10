@@ -13,13 +13,18 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "npm run build && node --test dist/tests/foundation.test.js dist/tests/platform.test.js tests/qr.test.mjs",
+    "test": "npm run build && node --test dist/tests/foundation.test.js dist/tests/platform.test.js dist/tests/security.test.js tests/http-security.test.mjs tests/qr.test.mjs",
     "eval": "tsx eval/run.ts",
     "dev": "node --env-file-if-exists=.env --import tsx apps/api/src/server.ts",
     "start": "node --env-file-if-exists=.env dist/apps/api/src/server.js",
     "tenant:key": "node --env-file-if-exists=.env --import tsx scripts/create-tenant-key.ts",
     "seed": "node --env-file-if-exists=.env --import tsx scripts/seed.ts",
     "screenshots": "node scripts/capture-screenshots.mjs",
+    "integration": "node --test tests/integration/stack.test.mjs",
+    "worker:scan": "node scripts/scan-worker.mjs",
+    "migration:drill": "node scripts/migration-drill.mjs",
+    "backup:restore": "node scripts/backup-restore.mjs",
+    "chaos": "node scripts/chaos.mjs",
     "build": "tsc"
   },
   "devDependencies": {

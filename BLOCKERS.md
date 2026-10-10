@@ -1,0 +1,22 @@
+# Verification blockers
+
+Run date: 2026-10-10. A harness or workflow is not a passing result. Local checks and unresolved external/runtime conditions are separated below.
+
+| Item | Status | Exact blocker / remaining action |
+|---|---|---|
+| PostgreSQL/Redis Compose run | UNAVAILABLE | `Get-Command docker` returns no executable and Docker daemon is not present. Install/start Docker Desktop or push this candidate so `.github/workflows/verify-stack.yml` runs, then inspect its reports. |
+| DB-backed browser/API, RLS, and scan queue tests | UNAVAILABLE | Tests exist in `tests/integration/stack.test.mjs` but require the unavailable Compose stack. Run the verification workflow and fix any failures before marking these gates passed. |
+| Browser E2E in CI | CONFIGURED, UNRUN | `tests/e2e/browser_e2e.py` covers the primary signup/scan/logout, developer page, mobile and keyboard flows. The candidate has no Actions run; push it and inspect artifacts. |
+| Axe | UNAVAILABLE locally; CI configured | The browser suite has 15 desktop/mobile axe checkpoints. `npm.cmd install --no-save --package-lock=false axe-core@4.14.0 @lhci/cli@0.15.1` stalled against registry access; offline install failed `ENOTCACHED` for `https://registry.npmjs.org/axe-core` metadata. The CI runner attempts the pinned install, but no Actions evidence exists. Run with registry access and fix all serious/critical findings. |
+| Slow/offline network, interrupted uploads, QR file/camera, PWA/share, extension | OPEN / UNAVAILABLE | These flows are not covered by browser tests yet. Add fixtures and run in Chromium/device CI. Camera and extension checks require browser/device fixtures. |
+| Every feature row and its failure paths | OPEN | `FEATURE_MATRIX.md` maps current tests. The current browser suite and API unit/security tests are not a complete per-route happy/failure matrix. Add bad input, expired session, wrong user/tenant, missing scope, rate limit, outage, payload boundary and concurrency cases; run them on Compose. |
+| Product deep-scan Redis queue | IMPLEMENTED, UNVERIFIED | The real `/v1/scans` deep path now enqueues Redis Stream jobs and the dedicated scan worker consumes them. Status/events persist across API replicas; streams are owner/tenant scoped; terminal commit is atomic/idempotent; retries use jitter, dead letters are bounded, queue length is capped, workers heartbeat pending entries and shut down gracefully. Tests cover two APIs/two workers, SIGKILL/reclaim, one final result, retry, poison messages, backpressure, idempotent retry and restart recovery. Docker absence prevents running them here. |
+| External webhook side effects | PARTIAL | Deterministic delivery IDs allow receiver replay protection on worker retry, but exactly-once external delivery requires receiver idempotency. The receiver/sandbox path is not exercised here. |
+| Other missing product features | NOT IMPLEMENTED | Account/data deletion, scheduled work, end-user notification delivery, payable billing, server-side media analysis, and live messaging integrations have no implementation. Define scope and implement before claiming those features. |
+| Per-stage latency and endpoint percentiles | PARTIAL / UNAVAILABLE | Request totals and scan API/worker timings now log assessment, persistence, Redis enqueue, queue wait, deep assessment and result persistence. `scripts/load.k6.js` still tests readiness only; endpoint p50/p95/p99, complete DB/cache/provider/queue spans and endpoint CI gates are not implemented/measured. |
+| Lighthouse mobile/bundle checks | CONFIGURED, UNRUN | `.lighthouserc.json` and CI/local runners gate mobile performance, LCP and JS/CSS transfer. Local package installation hit the registry blocker above; no workflow run exists. |
+| Clean checkout / GitHub Actions | UNAVAILABLE | No CI checkout has tested this worktree. Commit the candidate, push it, and review the full stack/security/Lighthouse artifacts and job results. |
+| Dependency/security scanner findings | CONFIGURED, UNRUN | Previous online npm advisory request was unreachable; offline audit is only cached evidence. Run security workflows with registry/network access and review npm/OSV, CodeQL/Semgrep, Gitleaks, Trivy and ZAP reports. |
+| Production capacity and recovery objectives | UNAVAILABLE | No production-like staging topology or agreed RPO/RTO exists. Local Docker and CI numbers cannot establish production capacity. |
+
+No unrun queue, axe, Lighthouse, scanner, DAST, load, chaos, database, or clean-checkout result is called passing.

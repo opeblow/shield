@@ -13,7 +13,7 @@ const schema = {
 export class OpenAiProvider {
   private failures = 0;
   private openUntil = 0;
-  constructor(private readonly apiKey?: string, private readonly model?: string, private readonly timeoutMs = 3500) {}
+  constructor(private readonly apiKey?: string, private readonly model?: string, private readonly timeoutMs = 3500, private readonly endpoint = "https://api.openai.com/v1/chat/completions") {}
 
   async assess(text: string, signals: Record<string, boolean>): Promise<LlmAssessment> {
     if (!this.apiKey || !this.model) throw new Error("OpenAI provider is not configured");
@@ -23,7 +23,7 @@ export class OpenAiProvider {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), Math.max(1, Math.floor(this.timeoutMs / 2)));
       try {
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        const response = await fetch(this.endpoint, {
           method: "POST", signal: controller.signal,
           headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
           body: JSON.stringify({ model: this.model, temperature: 0, store: false, response_format: { type: "json_schema", json_schema: schema }, messages: [

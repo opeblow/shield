@@ -11,6 +11,7 @@ CREATE TABLE webhooks (
 );
 CREATE INDEX webhooks_tenant_idx ON webhooks (tenant_id, created_at DESC);
 ALTER TABLE webhooks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE webhooks FORCE ROW LEVEL SECURITY;
 CREATE POLICY webhooks_tenant_isolation ON webhooks
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
@@ -35,6 +36,7 @@ CREATE TABLE usage_events (
 );
 CREATE INDEX usage_events_tenant_metric_idx ON usage_events (tenant_id, metric, at DESC);
 ALTER TABLE usage_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE usage_events FORCE ROW LEVEL SECURITY;
 CREATE POLICY usage_events_tenant_isolation ON usage_events
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);

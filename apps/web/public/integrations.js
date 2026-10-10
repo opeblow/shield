@@ -27,6 +27,7 @@ const onCopy = async (button) => {
   }
 };
 els.copyButtons.forEach((button) => button.addEventListener("click", () => onCopy(button)));
+els.signOut.removeAttribute("data-hidden");
 
 const formatDate = (value) => {
   if (!value) return "never";

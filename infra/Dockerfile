@@ -8,6 +8,7 @@ COPY scripts ./scripts
 COPY tests ./tests
 COPY eval ./eval
 COPY config ./config
+COPY infra/migrations ./infra/migrations
 COPY tsconfig.json eslint.config.js ./
 RUN npm run build && npm prune --omit=dev
 
@@ -17,6 +18,8 @@ WORKDIR /app
 COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/infra/migrations ./infra/migrations
+COPY --from=build --chown=node:node /app/scripts ./scripts
 COPY --chown=node:node apps/web/public ./apps/web/public
 USER node
 EXPOSE 3001

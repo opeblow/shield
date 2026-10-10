@@ -18,6 +18,11 @@ CREATE TABLE users (
   language text NOT NULL DEFAULT 'en' CHECK (language IN ('en','pcm','yo','ha','ig')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users FORCE ROW LEVEL SECURITY;
+CREATE POLICY users_tenant_isolation ON users
+  USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 CREATE TABLE scans (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid REFERENCES tenants(id) ON DELETE CASCADE,
@@ -50,6 +55,7 @@ CREATE TABLE api_keys (
   revoked_at timestamptz, last_used_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE api_keys FORCE ROW LEVEL SECURITY;
 CREATE POLICY api_keys_tenant_isolation ON api_keys
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
@@ -65,6 +71,11 @@ AS $$
   RETURNING public.api_keys.tenant_id, public.api_keys.key_hash, public.api_keys.scopes
 $$;
 REVOKE ALL ON FUNCTION resolve_api_key(text) FROM PUBLIC;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'shield_runtime') THEN
+    EXECUTE 'GRANT EXECUTE ON FUNCTION resolve_api_key(text) TO shield_runtime';
+  END IF;
+END $$;
 CREATE TABLE entities (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(), type text NOT NULL CHECK (type IN ('url','phone','account','domain','brand')),
   blind_index text NOT NULL, pepper_version text NOT NULL, normalized_cipher jsonb,
@@ -93,3 +104,8 @@ CREATE TABLE audit_logs (
   target text NOT NULL, prev_hash text NOT NULL, entry_hash text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX audit_logs_entry_hash_unique ON audit_logs (entry_hash);
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
+CREATE POLICY audit_logs_tenant_isolation ON audit_logs
+  USING (tenant_id IS NULL OR tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id IS NULL OR tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);

@@ -1,0 +1,186 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: shield
+      POSTGRES_USER: shield
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shield_local_test_only}
+    ports: ["${PG_HOST_PORT:-55432}:5432"]
+    volumes:
+      - verify_pg:/var/lib/postgresql/data
+      - ./init/0000_roles.sql:/docker-entrypoint-initdb.d/0000_roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shield -d shield"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["${REDIS_HOST_PORT:-56379}:6379"]
+    volumes: ["verify_redis:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  migrate:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["node", "scripts/migrate.mjs", "up"]
+    environment:
+      DATABASE_URL_MIGRATOR: postgres://shield:${POSTGRES_PASSWORD:-shield_local_test_only}@postgres:5432/shield
+    depends_on:
+      postgres: { condition: service_healthy }
+  migrate-drill:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["node", "scripts/migration-drill.mjs"]
+    environment:
+      DATABASE_URL_MIGRATOR: postgres://shield:${POSTGRES_PASSWORD:-shield_local_test_only}@postgres:5432/shield
+    depends_on:
+      postgres: { condition: service_healthy }
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["node", "dist/apps/api/src/server.js"]
+    environment:
+      NODE_ENV: development
+      PORT: "3001"
+      DATABASE_URL: postgres://shield_runtime:shield_runtime_test_only@postgres:5432/shield
+      REDIS_URL: redis://redis:6379
+      AUTH_SECRET: verify-only-auth-secret-00000000000000000000
+      CERTIFICATE_SECRET: verify-only-certificate-secret-000000000000000
+      BLIND_INDEX_PEPPER: verify-only-blind-index-pepper-0000000000000000
+      API_KEY_PEPPER: verify-only-api-key-pepper-000000000000000000
+      COMMUNITY_MODERATION_TOKEN: verify-only-community-token-00000000000000
+      FIELD_KEK: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      OPENAI_API_KEY: verify-test-key
+      OPENAI_MODEL: verify-test-model
+      OPENAI_BASE_URL: http://openai-mock:4010/v1/chat/completions
+    ports: ["${API_HOST_PORT:-33001}:3001"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  api-2:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["node", "dist/apps/api/src/server.js"]
+    environment:
+      NODE_ENV: development
+      PORT: "3001"
+      DATABASE_URL: postgres://shield_runtime:shield_runtime_test_only@postgres:5432/shield
+      REDIS_URL: redis://redis:6379
+      AUTH_SECRET: verify-only-auth-secret-00000000000000000000
+      CERTIFICATE_SECRET: verify-only-certificate-secret-000000000000000
+      BLIND_INDEX_PEPPER: verify-only-blind-index-pepper-0000000000000000
+      API_KEY_PEPPER: verify-only-api-key-pepper-000000000000000000
+      COMMUNITY_MODERATION_TOKEN: verify-only-community-token-00000000000000
+      FIELD_KEK: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      OPENAI_API_KEY: verify-test-key
+      OPENAI_MODEL: verify-test-model
+      OPENAI_BASE_URL: http://openai-mock:4010/v1/chat/completions
+      FIELD_KEK: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    ports: ["${API2_HOST_PORT:-33003}:3001"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  app:
+    image: nginx:1.27-alpine
+    volumes:
+      - ../apps/web/public:/usr/share/nginx/html:ro
+      - ./verify-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports: ["${APP_HOST_PORT:-33000}:80"]
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["node", "scripts/worker.mjs"]
+    environment:
+      REDIS_URL: redis://redis:6379
+      WORKER_HEALTH_PORT: "3002"
+    ports: ["${WORKER_HOST_PORT:-33002}:3002"]
+    depends_on:
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  scan-worker-a:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["node", "scripts/scan-worker.mjs"]
+    environment:
+      DATABASE_URL: postgres://shield_runtime:shield_runtime_test_only@postgres:5432/shield
+      REDIS_URL: redis://redis:6379
+      OPENAI_API_KEY: verify-test-key
+      OPENAI_MODEL: verify-test-model
+      OPENAI_BASE_URL: http://openai-mock:4010/v1/chat/completions
+      FIELD_KEK: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      SCAN_RECLAIM_MS: "10000"
+      SCAN_MAX_ATTEMPTS: "5"
+      VERIFY_TEST_WORKER_DELAY_MS: "5000"
+      VERIFY_TEST_FAIL_ONCE: "1"
+      SCAN_CONSUMER_ID: scan-worker-a
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      openai-mock: { condition: service_started }
+  scan-worker-b:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["node", "scripts/scan-worker.mjs"]
+    environment:
+      DATABASE_URL: postgres://shield_runtime:shield_runtime_test_only@postgres:5432/shield
+      REDIS_URL: redis://redis:6379
+      OPENAI_API_KEY: verify-test-key
+      OPENAI_MODEL: verify-test-model
+      OPENAI_BASE_URL: http://openai-mock:4010/v1/chat/completions
+      SCAN_RECLAIM_MS: "10000"
+      SCAN_MAX_ATTEMPTS: "5"
+      SCAN_CONSUMER_ID: scan-worker-b
+      VERIFY_TEST_FAIL_ONCE: "1"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      openai-mock: { condition: service_started }
+  openai-mock:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["node", "scripts/openai-mock.mjs"]
+    environment:
+      OPENAI_MOCK_PORT: "4010"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4010/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  verify_pg:
+  verify_redis:

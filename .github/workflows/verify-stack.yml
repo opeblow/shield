@@ -1,0 +1,82 @@
+name: verification-stack
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  full-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      COMPOSE_FILE: infra/verify.compose.yml
+      COMPOSE_PROJECT_NAME: shield-verify
+      REPORT_DIR: reports
+      POSTGRES_PASSWORD: shield_local_test_only
+      DATABASE_URL_MIGRATOR: postgres://shield:shield_local_test_only@127.0.0.1:55432/shield
+      DATABASE_URL_RUNTIME: postgres://shield_runtime:shield_runtime_test_only@127.0.0.1:55432/shield
+      REDIS_URL_TEST: redis://127.0.0.1:56379
+      VERIFY_API_URL: http://127.0.0.1:33001
+      VERIFY_API_URL_2: http://127.0.0.1:33003
+      VERIFY_OPENAI_URL: http://127.0.0.1:4010
+      VERIFY_WORKER_URL: http://127.0.0.1:33002/healthz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - name: Install pinned browser audit tools
+        run: npm install --no-save --package-lock=false axe-core@4.14.0 @lhci/cli@0.15.1
+      - run: mkdir -p reports
+      - name: Unit checks
+        run: npm run typecheck && npm run lint && npm test && npm run eval > reports/eval.stdout
+      - name: Start PostgreSQL and Redis
+        run: docker compose up -d --build postgres redis
+      - name: Apply migrations
+        run: docker compose up -d --build migrate
+      - name: Migration up/down/restore drill
+        run: docker compose run --build --rm migrate-drill | tee reports/migrations.stdout
+      - name: Start API, web app, worker, and provider mock
+        run: docker compose up -d --build --wait api api-2 app worker scan-worker-a scan-worker-b openai-mock
+      - name: Install browser test runtime
+        run: python -m pip install -r requirements-test.txt && python -m playwright install chromium
+      - name: Browser smoke and responsive screenshots
+        run: SHIELD_BASE_URL=http://127.0.0.1:33000 AXE_REQUIRED=1 python tests/e2e/browser_e2e.py | tee reports/browser-e2e.stdout
+      - name: Lighthouse mobile performance and bundle gates
+        run: npx lhci autorun --config=.lighthouserc.json | tee reports/lighthouse.stdout
+      - name: PostgreSQL, Redis, tenant isolation, queue, concurrency, and provider integration tests
+        run: npm run integration | tee reports/integration.tap
+      - name: Dependency and provider chaos tests
+        run: npm run chaos | tee reports/chaos.stdout
+      - name: PostgreSQL backup and restore drill
+        run: npm run backup:restore | tee reports/backup-restore.stdout
+      - name: k6 baseline, ramp, spike, and soak profiles
+        run: |
+          for profile in baseline ramp spike soak; do
+            docker run --rm --network host -e "PROFILE=$profile" -e TARGET_URL=http://127.0.0.1:33001 -e SOAK_DURATION=10m -v "$PWD:/work" -w /work grafana/k6:0.53.0 run --summary-export "/work/reports/k6-$profile.json" /work/scripts/load.k6.js | tee "reports/k6-$profile.stdout"
+          done
+      - name: OWASP ZAP baseline and OpenAPI scans
+        run: |
+          docker run --rm --network shield-verify_default -v "$PWD/reports:/zap/wrk/:rw" zaproxy/zap-stable zap-baseline.py -t http://app:80 -J zap-baseline.json | tee reports/zap-baseline.stdout
+          docker run --rm --network shield-verify_default -v "$PWD/reports:/zap/wrk/:rw" zaproxy/zap-stable zap-api-scan.py -t http://api:3001/openapi.yaml -f openapi -J zap-api.json | tee reports/zap-api.stdout
+      - name: Capture stack logs and state
+        if: always()
+        run: |
+          docker compose ps --all > reports/compose-ps.txt || true
+          docker compose logs --no-color > reports/compose.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shield-verification-reports
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Stop stack and remove test volumes
+        if: always()
+        run: docker compose down --volumes --remove-orphans

@@ -1,6 +1,6 @@
 const requiredInProduction = ["AUTH_SECRET", "CERTIFICATE_SECRET", "FIELD_KEK", "BLIND_INDEX_PEPPER", "API_KEY_PEPPER", "COMMUNITY_MODERATION_TOKEN"] as const;
 
-export type AppEnv = { nodeEnv: string; port: number; databaseUrl?: string; redisUrl?: string; openAiKey?: string; openAiModel?: string; openAiVisionModel?: string; openAiTranscribeModel?: string; openAiTtsModel?: string; fieldKek?: string; blindPepper?: string; apiKeyPepper?: string; communityModerationToken?: string; authSecret?: string; certificateSecret?: string };
+export type AppEnv = { nodeEnv: string; port: number; databaseUrl?: string; redisUrl?: string; openAiKey?: string; openAiModel?: string; openAiBaseUrl?: string; openAiVisionModel?: string; openAiTranscribeModel?: string; openAiTtsModel?: string; fieldKek?: string; blindPepper?: string; apiKeyPepper?: string; communityModerationToken?: string; authSecret?: string; certificateSecret?: string };
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
   const nodeEnv = source.NODE_ENV ?? "development";
@@ -22,6 +22,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     ...(source.REDIS_URL ? { redisUrl: source.REDIS_URL } : {}),
     ...(source.OPENAI_API_KEY ? { openAiKey: source.OPENAI_API_KEY } : {}),
     ...(source.OPENAI_MODEL ? { openAiModel: source.OPENAI_MODEL } : {}),
+    ...(source.OPENAI_BASE_URL ? { openAiBaseUrl: source.OPENAI_BASE_URL } : {}),
     ...(source.OPENAI_VISION_MODEL ? { openAiVisionModel: source.OPENAI_VISION_MODEL } : {}),
     ...(source.OPENAI_TRANSCRIBE_MODEL ? { openAiTranscribeModel: source.OPENAI_TRANSCRIBE_MODEL } : {}),
     ...(source.OPENAI_TTS_MODEL ? { openAiTtsModel: source.OPENAI_TTS_MODEL } : {}),

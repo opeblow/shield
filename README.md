@@ -7,7 +7,7 @@
 <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D22-3c873a" alt="Node" /></a>
 <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/typescript-5.x-3178c6" alt="TypeScript" /></a>
 <a href="#verification"><img src="https://img.shields.io/badge/checks-typecheck%20%7C%20lint%20%7C%20test%20%7C%20eval-2ea043" alt="Checks" /></a>
-<a href="#verification"><img src="https://img.shields.io/badge/tests-48%20passing-2ea043" alt="Tests" /></a>
+<a href="#verification"><img src="https://img.shields.io/badge/tests-61%20passing-2ea043" alt="Tests" /></a>
 <a href="#verification"><img src="https://img.shields.io/badge/eval-recall%201.00%20%7C%20FPR%200.00-2ea043" alt="Eval" /></a>
 <a href="#licence"><img src="https://img.shields.io/badge/license-proprietary-lightgrey" alt="License" /></a>
 <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs welcome" /></a>
@@ -85,11 +85,15 @@ Requirements: Node.js 22 or newer and npm. No third-party account is needed to r
 
 For visual QA, start the app and run `npm run screenshots` in an environment with Microsoft Edge installed; it captures exact 390px and 1440px viewports into `docs/screenshots/`.
 
+For the Docker-backed verification stack, run `bash scripts/verify-all.sh` on macOS/Linux or `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-all.ps1` on Windows after Docker Desktop is running. It rebuilds the isolated test stack, runs migrations and RLS/Redis/provider integration tests, ZAP, four k6 profiles, chaos and backup/restore drills, then writes reports under `reports/`. The scripts remove only the `shield-verify` Compose project and its named test volumes when they exit. The k6 profiles exercise dependency readiness; they do not measure scan throughput or production capacity.
+
+The full-stack runner installs the pinned Python Playwright test dependency and Chromium, then captures expanded browser E2E screenshots and JSON under `reports/`. It covers primary desktop/mobile signup, scan, logout, developer-key, and keyboard paths, with axe checkpoints when the package install succeeds. This suite is not yet complete for every feature-matrix failure path; see `FEATURE_MATRIX.md` and `BLOCKERS.md`. `LATENCY_BUDGETS.md` records initial targets and unrun measurements.
+
 Add `OPENAI_API_KEY` and `OPENAI_MODEL` to the environment to enable the structured text assessment. Never use real customer data in development. With `REDIS_URL` blank, development uses a process-local rate limiter; production refuses to start without PostgreSQL and Redis. Without `DATABASE_URL`, scans are not persisted. Neither local mode is suitable for production traffic.
 
 ## Services and deployment status
 
-`infra/docker-compose.yml` describes local PostgreSQL and Redis. To use PostgreSQL locally, set `POSTGRES_PASSWORD` and `DATABASE_URL` in `.env`, start Compose, then apply the migration in `infra/migrations/` (including `0004_auth.sql` for consumer accounts and sessions, `0005_trust.sql` for blind-indexed identifier reports and integration keys, and `0006_alert_waves.sql` for the fraud-wave ledger) to the isolated development database. The API has PostgreSQL persistence and Redis rate-limit adapters, but neither has been runtime-verified in this environment; queues, object storage, and account onboarding remain incomplete. Consumer email/password authentication works without a database via a process-local store that is only suitable for development, and stores sessions in an `HttpOnly` cookie. This repository is an active implementation and is not launch-ready. Do not expose it to public traffic.
+`infra/docker-compose.yml` describes local PostgreSQL and Redis. To use PostgreSQL locally, set `POSTGRES_PASSWORD` and `DATABASE_URL` in `.env` and start Compose; the `migrate` service applies numbered up migrations and grants the API a non-superuser RLS-enforced role. The API has PostgreSQL persistence and Redis rate-limit adapters, but neither has been runtime-verified in this environment; the Redis-backed deep-scan queue is implemented but not runtime-verified in this environment; object storage and account onboarding remain incomplete. Consumer email/password authentication works without a database via a process-local store that is only suitable for development, and stores sessions in an `HttpOnly` cookie. This repository is an active implementation and is not launch-ready. Do not expose it to public traffic.
 
 Production requires managed PostgreSQL/Redis/object storage, TLS termination, a KMS-backed keyring, OpenAI account configuration, rate limiting and auth backed by shared infrastructure, monitoring, backups, and privacy/security review. These external dependencies have not been provisioned and this repository is not launch-ready.
 
@@ -289,7 +293,7 @@ npm test
 npm run eval
 ```
 
-On the current tree these report a clean typecheck and lint, 48 passing tests,
+On the current tree these report a clean typecheck and lint, 61 passing tests,
 and 450 self-authored eval cases with recall 1.00 and false-positive rate 0.00.
 The eval figures are a pipeline check, not representative efficacy evidence.
 
