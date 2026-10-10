@@ -62,6 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - run: mkdir -p reports
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
@@ -69,15 +70,34 @@ jobs:
           file: infra/Dockerfile
           tags: shield:ci
           load: true
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0, verified upstream signature
+      - id: trivy-image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0, verified upstream signature
+        continue-on-error: true
         with:
           image-ref: shield:ci
           severity: HIGH,CRITICAL
           exit-code: "1"
           scan-type: image
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0, verified upstream signature
+          format: sarif
+          output: reports/trivy-image.sarif
+      - id: trivy-config
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0, verified upstream signature
+        continue-on-error: true
         with:
           scan-type: config
           scan-ref: .
           severity: HIGH,CRITICAL
           exit-code: "1"
+          format: sarif
+          output: reports/trivy-config.sarif
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-reports
+          path: reports/*.sarif
+          if-no-files-found: warn
+      - name: Enforce clean Trivy scans
+        if: always()
+        run: |
+          test "${{ steps.trivy-image.outcome }}" = success
+          test "${{ steps.trivy-config.outcome }}" = success

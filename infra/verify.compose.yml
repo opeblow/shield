@@ -148,6 +148,8 @@ services:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       openai-mock: { condition: service_started }
+    healthcheck:
+      disable: true
   scan-worker-b:
     build:
       context: ..
@@ -167,6 +169,8 @@ services:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       openai-mock: { condition: service_started }
+    healthcheck:
+      disable: true
   openai-mock:
     build:
       context: ..
